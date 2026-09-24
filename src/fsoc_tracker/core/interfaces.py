@@ -10,7 +10,7 @@ Implementations live in ``fsoc_tracker.io.*``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator
+from collections.abc import Iterator
 
 from fsoc_tracker.core.models import Frame
 

@@ -26,8 +26,7 @@ import pytest
 
 from fsoc_tracker.core.interfaces import FrameSource
 from fsoc_tracker.core.models import ColorModel, Frame, SourceType
-from fsoc_tracker.pipeline.sources import VideoSource, EquirectangularFrameSource
-
+from fsoc_tracker.pipeline.sources import EquirectangularFrameSource, VideoSource
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -469,8 +468,8 @@ class TestTrackerProcessing:
         src.release()
 
     def test_tracker_on_video_sequence(self, test_video):
-        from fsoc_tracker.tracking.tracker import KalmanTracker
         from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+        from fsoc_tracker.tracking.tracker import KalmanTracker
         src = VideoSource(test_video)
         src.open()
         detector = ClassicalBeaconDetector()
@@ -494,11 +493,11 @@ class TestTrackerProcessing:
 
     def test_full_pipeline_video(self, test_video):
         """Run perception→tracking→control on video frames."""
-        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-        from fsoc_tracker.tracking.tracker import KalmanTracker
         from fsoc_tracker.control.controller import CoarsePointingController
+        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         cam_state = CameraState(
             horizontal_fov_deg=4.0, vertical_fov_deg=3.0,
@@ -816,11 +815,11 @@ class TestWorkerVideoMode:
 class TestEndToEndPipeline:
     def test_full_pipeline_with_video(self, test_video):
         """Run complete perception→tracking→control pipeline on video."""
-        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-        from fsoc_tracker.tracking.tracker import KalmanTracker
         from fsoc_tracker.control.controller import CoarsePointingController
+        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         cam_state = CameraState(
             horizontal_fov_deg=4.0, vertical_fov_deg=3.0,

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 class ApplicationController:
     """Thin facade. GUI calls these methods; worker does the work."""
 

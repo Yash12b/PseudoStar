@@ -18,8 +18,7 @@ State machine:
 
 from __future__ import annotations
 
-from fsoc_tracker.tracking.state import TrackEvent, TrackState, TrackingEvent
-
+from fsoc_tracker.tracking.state import TrackEvent, TrackingEvent, TrackState
 
 # Valid transitions: (from_state, to_state)
 _VALID_TRANSITIONS: set[tuple[TrackState, TrackState]] = {

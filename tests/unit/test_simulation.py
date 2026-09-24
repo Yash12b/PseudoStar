@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from fsoc_tracker.core.exceptions import SimulationError
@@ -11,7 +9,6 @@ from fsoc_tracker.simulation.boundaries import BoundaryMode, apply_boundary, app
 from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.target import WorldTargetState
 from fsoc_tracker.simulation.world import WorldConfig, WorldState
-
 
 # ---------------------------------------------------------------------------
 # Boundary tests
@@ -357,3 +354,57 @@ class TestUserControlledNudge:
         state = engine.step(1.0 / 30.0)
         assert state.targets[0].x == pytest.approx(1000.0)
         assert state.targets[0].z == pytest.approx(500.0)
+
+
+class TestBeaconReconfigure:
+    """Live per-beacon editing preserves all fields through snapshots."""
+
+    def test_reconfigure_all_fields(self):
+        from fsoc_tracker.simulation.engine import SimulationEngine
+        from fsoc_tracker.simulation.world import WorldConfig
+        e = SimulationEngine(WorldConfig())
+        t = e.add_target(trajectory_type="straight_line",
+                         trajectory_params={"x0": 1000.0, "y0": 1000.0,
+                                            "z0": 500.0, "vx": 0.1, "vy": 0.1})
+        assert e.reconfigure_beacon(
+            t.target_id, trajectory_type="circular",
+            trajectory_params={"cx": 1000.0, "cy": 1000.0, "cz": 500.0,
+                               "radius": 5.0, "angular_speed_rad_s": 0.3},
+            size_px=15.0, brightness=1.5, shape="circular", seed=7) is True
+        got = [x for x in e.get_state().targets
+               if x.target_id == t.target_id][0]
+        assert got.trajectory_type == "circular"
+        assert got.size_px == 15.0
+        assert got.brightness == 1.5
+        assert got.shape == "circular"
+        assert got.seed == 7
+
+    def test_reconfigure_unknown_id(self):
+        from fsoc_tracker.simulation.engine import SimulationEngine
+        from fsoc_tracker.simulation.world import WorldConfig
+        e = SimulationEngine(WorldConfig())
+        assert e.reconfigure_beacon(999, size_px=12.0) is False
+
+    def test_renderer_honors_per_target_size(self):
+        import numpy as np
+
+        from fsoc_tracker.simulation.camera.camera import VirtualCamera
+        from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.sensor.config import SensorConfig
+        from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+        from fsoc_tracker.simulation.target import WorldTargetState
+        cam = VirtualCamera(CameraState(position_x=1000.0, position_y=1000.0,
+                                        position_z=50.0))
+        sensor = VirtualSensorRenderer(SensorConfig())
+        mk = lambda sz: WorldTargetState(target_id=0, x=1000.0, y=1000.0,
+                                         z=600.0, brightness=1.0, size_px=sz)
+        a = sensor.render(cam, [mk(20.0)], 0.0, 0).image
+        b = sensor.render(cam, [mk(10.0)], 0.0, 0).image
+        c = sensor.render(cam, [mk(None)], 0.0, 0).image
+        na = int(np.sum(a > 100))
+        nb = int(np.sum(b > 100))
+        nc = int(np.sum(c > 100))
+        assert na > nb > 0
+        # Default (None) matches legacy default-size rendering
+        d = sensor.render(cam, [mk(10.0)], 0.0, 0).image
+        assert nc == int(np.sum(d > 100))

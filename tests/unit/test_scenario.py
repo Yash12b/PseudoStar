@@ -15,13 +15,11 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pytest
 
-from fsoc_tracker.simulation.scenario import BeaconConfig, ScenarioConfig, TerminalConfig
 from fsoc_tracker.simulation.engine import SimulationEngine
+from fsoc_tracker.simulation.scenario import BeaconConfig, ScenarioConfig, TerminalConfig
 from fsoc_tracker.simulation.trajectory.registry import TrajectoryRegistry
 from fsoc_tracker.simulation.world import WorldConfig
-
 
 # ---------------------------------------------------------------------------
 # 1. Multiple beacons have independent motion

@@ -70,6 +70,22 @@ def export_json(result: BenchmarkResult, path: str) -> str:
                 "locked_frames": result.loss.locked_frames,
                 "evaluable_frames": result.loss.evaluable_frames,
             },
+            "detection": {
+                "true_positives": result.detection.true_positives,
+                "false_positives": result.detection.false_positives,
+                "false_negatives": result.detection.false_negatives,
+                "true_negatives": result.detection.true_negatives,
+                "precision": result.detection.precision,
+                "recall": result.detection.recall,
+                "evaluated_frames": result.detection.evaluated_frames,
+            },
+            "mot": {
+                "mota": result.mot.mota,
+                "motp_px": result.mot.motp_px,
+                "idf1": result.mot.idf1,
+                "id_switches": result.mot.id_switches,
+                "gt_frames": result.mot.gt_frames,
+            },
             "reacquisition": {
                 "mean_s": result.reacquisition.mean_s,
                 "median_s": result.reacquisition.median_s,
@@ -77,6 +93,8 @@ def export_json(result: BenchmarkResult, path: str) -> str:
                 "p95_s": result.reacquisition.p95_s,
                 "total_events": result.reacquisition.total_events,
                 "failed_reacquisitions": result.reacquisition.failed_reacquisitions,
+                "times_from_reappearance": result.reacquisition.times_from_reappearance,
+                "mean_from_reappearance_s": result.reacquisition.mean_from_reappearance_s,
             },
             "performance": {
                 "mean_processing_ms": result.performance.mean_processing_ms,

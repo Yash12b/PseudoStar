@@ -46,7 +46,7 @@ def score_candidate(
     if total_weight <= 0:
         return 0.0
 
-    weighted_sum = sum(s * w for s, w in zip(scores, weights))
+    weighted_sum = sum(s * w for s, w in zip(scores, weights, strict=True))
     return float(weighted_sum / total_weight)
 
 

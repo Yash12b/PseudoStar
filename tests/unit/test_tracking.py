@@ -36,15 +36,14 @@ import math
 import numpy as np
 import pytest
 
-from fsoc_tracker.perception.models import BeaconDetection, PerceptionStatus, TargetClass
+from fsoc_tracker.perception.models import BeaconDetection, PerceptionStatus
 from fsoc_tracker.tracking.association import associate_nearest, euclidean_distance
-from fsoc_tracker.tracking.config import AssociationMethod, TrackerConfig
+from fsoc_tracker.tracking.config import TrackerConfig
 from fsoc_tracker.tracking.events import TrackingMetricsCollector
 from fsoc_tracker.tracking.kalman import KalmanFilter2D
-from fsoc_tracker.tracking.state import TrackEvent, TrackState, TrackingState
+from fsoc_tracker.tracking.state import TrackEvent, TrackState
 from fsoc_tracker.tracking.state_machine import TrackStateMachine
 from fsoc_tracker.tracking.tracker import KalmanTracker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -995,9 +994,9 @@ class TestTrackerIntegration:
 
 class TestAssociationFloor:
     def test_floor_accepts_close_despite_mahal(self):
+        from fsoc_tracker.perception.models import BeaconDetection
         from fsoc_tracker.tracking.association import associate_nearest
         from fsoc_tracker.tracking.config import AssociationMethod, TrackerConfig
-        from fsoc_tracker.perception.models import BeaconDetection
         cfg = TrackerConfig(association_method=AssociationMethod.MAHALANOBIS,
                             association_gate_floor_px=15.0)
         det = BeaconDetection(detected=True, confidence=0.9,
@@ -1008,9 +1007,9 @@ class TestAssociationFloor:
         assert out is det
 
     def test_floor_rejects_far_despite_mahal(self):
+        from fsoc_tracker.perception.models import BeaconDetection
         from fsoc_tracker.tracking.association import associate_nearest
         from fsoc_tracker.tracking.config import AssociationMethod, TrackerConfig
-        from fsoc_tracker.perception.models import BeaconDetection
         cfg = TrackerConfig(association_method=AssociationMethod.MAHALANOBIS,
                             association_gate_floor_px=15.0)
         det = BeaconDetection(detected=True, confidence=0.9,
@@ -1018,3 +1017,78 @@ class TestAssociationFloor:
         out = associate_nearest([det], (320.0, 240.0), cfg,
                                 kalman_mahal_fn=lambda p: 999.0)
         assert out is None
+
+
+class TestByteRescuePass:
+    """Second-chance association on sub-threshold detections."""
+
+    def _det(self, x, y, conf, flagged=True):
+        from fsoc_tracker.perception.models import (
+            BeaconDetection, PerceptionStatus, TargetClass,
+        )
+        return BeaconDetection(
+            target_class=TargetClass.BEACON,
+            center_x=float(x), center_y=float(y),
+            bbox=(x - 2, y - 2, x + 2, y + 2),
+            width=5.0, height=5.0, area=25.0,
+            mean_intensity=200.0, max_intensity=220.0,
+            integrated_intensity=5000.0, local_contrast=150.0,
+            timestamp_s=0.0, frame_index=0,
+            algorithm="test", visibility_state=PerceptionStatus.DETECTED,
+            confidence=float(conf), detected=bool(flagged),
+        )
+
+    def _tracker(self, **kw):
+        from fsoc_tracker.tracking.tracker import KalmanTracker
+        from fsoc_tracker.tracking.config import TrackerConfig
+        return KalmanTracker(TrackerConfig(**kw))
+
+    def test_rescue_revives_on_weak_detection(self):
+        trk = self._tracker()
+        t = 0.0
+        for _ in range(5):
+            trk.update([self._det(320, 240, 0.9)], t)
+            t += 1.0 / 30.0
+        assert trk.state.name == "TRACKING"
+        # Dim flicker: below min_conf (0.2) but above floor (0.1).
+        ts = trk.update([self._det(322, 241, 0.15, flagged=False)], t)
+        assert ts.rescued_by_low_conf is True
+        assert ts.has_detection is True
+
+    def test_rescue_capped_forces_miss(self):
+        trk = self._tracker(rescue_max_streak=2)
+        t = 0.0
+        for _ in range(5):
+            trk.update([self._det(320, 240, 0.9)], t)
+            t += 1.0 / 30.0
+        rescued = 0
+        for _ in range(6):
+            ts = trk.update([self._det(322, 241, 0.15, flagged=False)], t)
+            t += 1.0 / 30.0
+            rescued += ts.rescued_by_low_conf
+        assert rescued == 2
+
+    def test_rescue_disabled_behaves_as_before(self):
+        trk = self._tracker(rescue_enabled=False)
+        t = 0.0
+        for _ in range(5):
+            trk.update([self._det(320, 240, 0.9)], t)
+            t += 1.0 / 30.0
+        ts = trk.update([self._det(322, 241, 0.15, flagged=False)], t)
+        assert ts.rescued_by_low_conf is False
+        assert ts.has_detection is False
+
+    def test_empty_frames_still_miss(self):
+        trk = self._tracker()
+        t = 0.0
+        for _ in range(5):
+            trk.update([self._det(320, 240, 0.9)], t)
+            t += 1.0 / 30.0
+        ts = trk.update([], t)
+        assert ts.rescued_by_low_conf is False
+        assert ts.has_detection is False
+
+    def test_no_track_never_rescues(self):
+        trk = self._tracker()
+        ts = trk.update([self._det(320, 240, 0.15, flagged=False)], 0.0)
+        assert ts.rescued_by_low_conf is False

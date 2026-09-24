@@ -29,18 +29,18 @@ import math
 
 from fsoc_tracker.gui.state import ApplicationViewState
 from fsoc_tracker.gui.theme import Colors
-
-from fsoc_tracker.simulation.camera.state import CameraState, CameraViewMode
 from fsoc_tracker.simulation.camera.geometry import camera_rotation_matrix
 from fsoc_tracker.simulation.camera.projection import project_to_image
+from fsoc_tracker.simulation.camera.state import CameraState, CameraViewMode
 
 try:
-    from PySide6.QtCore import Qt, QPointF, Signal
-    from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QAction
+    from PySide6.QtCore import QPointF, Qt, Signal
+    from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPen
     from PySide6.QtWidgets import QFrame, QMenu
 except ImportError:
-    from PyQt5.QtCore import Qt, QPointF, pyqtSignal as Signal  # type: ignore
-    from PyQt5.QtGui import QPainter, QPen, QColor, QPainterPath, QAction  # type: ignore
+    from PyQt5.QtCore import QPointF, Qt  # type: ignore
+    from PyQt5.QtCore import pyqtSignal as Signal
+    from PyQt5.QtGui import QAction, QColor, QPainter, QPainterPath, QPen  # type: ignore
     from PyQt5.QtWidgets import QFrame, QMenu  # type: ignore
 
 
@@ -56,6 +56,7 @@ _TRAJ_PREVIEW_DURATION = 30.0  # seconds to preview
 
 class WorldViewWidget(QFrame):
     target_selected = Signal(int)
+    terminal_selected = Signal()
     beacon_dragged = Signal(int, float, float, float)
     terminal_placed = Signal(float, float, float)
     scan_started = Signal()
@@ -97,14 +98,7 @@ class WorldViewWidget(QFrame):
 
     def _get_render_camera(self, s: ApplicationViewState) -> CameraState:
         render_cam = self.free_camera
-        if s.camera_mode == CameraViewMode.TERMINAL_A_POV.value and hasattr(s, "terminal_a"):
-            ta = s.terminal_a
-            render_cam = CameraState(
-                position_x=ta.world_x, position_y=ta.world_y, position_z=ta.world_z,
-                pan_deg=ta.yaw_deg, tilt_deg=ta.pitch_deg,
-                horizontal_fov_deg=ta.hfov_deg, vertical_fov_deg=ta.vfov_deg,
-            )
-        elif s.camera_mode == CameraViewMode.FOLLOW.value and hasattr(s, "terminal_a"):
+        if s.camera_mode == CameraViewMode.TERMINAL_A_POV.value and hasattr(s, "terminal_a") or s.camera_mode == CameraViewMode.FOLLOW.value and hasattr(s, "terminal_a"):
             ta = s.terminal_a
             render_cam = CameraState(
                 position_x=ta.world_x, position_y=ta.world_y, position_z=ta.world_z,
@@ -163,6 +157,7 @@ class WorldViewWidget(QFrame):
                 dx = ta_res.pixel_x - event.pos().x()
                 dy = ta_res.pixel_y - event.pos().y()
                 if math.sqrt(dx*dx + dy*dy) < 16:
+                    self.terminal_selected.emit()
                     self.last_pos = None
                     return
 
@@ -333,7 +328,7 @@ class WorldViewWidget(QFrame):
         center_act.triggered.connect(self._center_on_world)
         menu.addAction(center_act)
 
-        menu.exec_(event.globalPos())
+        menu.exec(event.globalPos())
 
     # ------------------------------------------------------------------
     #  Actions
@@ -644,23 +639,62 @@ class WorldViewWidget(QFrame):
         self, painter: QPainter, s: ApplicationViewState,
         cam_pos, intrinsics, rot_mat,
     ) -> None:
-        """Draw trajectory preview trails for all targets."""
+        """Draw target motion trails (fading polylines, newest brightest)."""
+        if not s.show_trail:
+            return
         for t in s.targets_all:
-            if not t.visible:
+            if not t.visible or not t.trail:
                 continue
-            traj_type = t.trajectory_type
-            if not traj_type or traj_type == "unknown":
+            pts = t.trail
+            if len(pts) < 2:
                 continue
+            is_primary = t.target_id == s.designated_beacon_id
+            base = QColor("#FFB300") if is_primary else QColor("#4488FF")
+            for i in range(1, len(pts)):
+                a = pts[i - 1]
+                b = pts[i]
+                if len(a) < 3 or len(b) < 3:
+                    continue
+                ra = project_to_image((a[0], a[1], a[2]), cam_pos, intrinsics, rot_mat)
+                rb = project_to_image((b[0], b[1], b[2]), cam_pos, intrinsics, rot_mat)
+                if ra.depth <= 0 or rb.depth <= 0:
+                    continue
+                frac = i / len(pts)
+                col = QColor(base)
+                col.setAlpha(int(40 + 180 * frac))
+                painter.setPen(QPen(col, 2 if is_primary else 1))
+                painter.drawLine(QPointF(ra.pixel_x, ra.pixel_y),
+                                 QPointF(rb.pixel_x, rb.pixel_y))
+        self._draw_camera_trail(painter, s, cam_pos, intrinsics, rot_mat)
 
-            # Generate trajectory sample points
-            # We can't directly access trajectory params from TargetView,
-            # so we'll draw a simple velocity-predicted trail
-            # This shows where the target is heading based on its current velocity
-            # which is stored in the simulation engine (not directly in TargetView)
+    def _draw_camera_trail(
+        self, painter: QPainter, s: ApplicationViewState,
+        cam_pos, intrinsics, rot_mat,
+    ) -> None:
+        """Draw the camera boresight sweep path (search trail).
 
-            # Draw a short line in the direction of motion
-            # The velocity is implicitly in the trajectory; we draw a simple prediction
-            pass
+        Shows where the camera has pointed: the spiral/search pattern
+        is directly observable instead of inferred from motion.
+        """
+        if not s.show_trail:
+            return
+        pts = s.camera_trail
+        if not pts or len(pts) < 2:
+            return
+        for i in range(1, len(pts)):
+            a, b = pts[i - 1], pts[i]
+            if len(a) < 3 or len(b) < 3:
+                continue
+            ra = project_to_image((a[0], a[1], a[2]), cam_pos, intrinsics, rot_mat)
+            rb = project_to_image((b[0], b[1], b[2]), cam_pos, intrinsics, rot_mat)
+            if ra.depth <= 0 or rb.depth <= 0:
+                continue
+            frac = i / len(pts)
+            col = QColor(Colors.CROSSHAIR)
+            col.setAlpha(int(30 + 150 * frac))
+            painter.setPen(QPen(col, 1, Qt.DotLine))
+            painter.drawLine(QPointF(ra.pixel_x, ra.pixel_y),
+                             QPointF(rb.pixel_x, rb.pixel_y))
 
     def _draw_targets(
         self, painter: QPainter, s: ApplicationViewState,

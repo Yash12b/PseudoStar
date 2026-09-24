@@ -11,7 +11,7 @@ import time
 import numpy as np
 
 from fsoc_tracker.ai.config import AIModelConfig
-from fsoc_tracker.ai.coordinates import decode_heatmap_center
+from fsoc_tracker.ai.coordinates import model_to_source
 from fsoc_tracker.ai.model import BeaconCNN
 from fsoc_tracker.perception.base import PerceptionEngine
 from fsoc_tracker.perception.config import PerceptionConfig
@@ -93,6 +93,15 @@ class AIBeaconDetector(PerceptionEngine):
         t0 = time.perf_counter()
 
         h, w = image.shape[:2]
+        # Accept BGR video frames like the classical path (which converts
+        # in preprocessing); the model needs single-channel input.
+        gray = image
+        if gray.ndim == 3:
+            try:
+                import cv2
+                gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+            except ImportError:
+                gray = gray[:, :, 0]
 
         # Compute scale factor from original to model input
         scale_x = w / self._model_config.input_width
@@ -100,7 +109,7 @@ class AIBeaconDetector(PerceptionEngine):
         self._scale_factor = max(scale_x, scale_y)
 
         # Normalize and resize for model input
-        img_float = image.astype(np.float32) / 255.0
+        img_float = gray.astype(np.float32) / 255.0
 
         if img_float.shape != (self._model_config.input_height, self._model_config.input_width):
             img_float = self._resize_for_model(img_float)
@@ -151,6 +160,12 @@ class AIBeaconDetector(PerceptionEngine):
         h, w = image.shape
         target_h = self._model_config.input_height
         target_w = self._model_config.input_width
+        try:
+            import cv2
+            return cv2.resize(image, (target_w, target_h),
+                              interpolation=cv2.INTER_LINEAR)
+        except ImportError:
+            pass
         result = np.zeros((target_h, target_w), dtype=np.float32)
         for i in range(target_h):
             for j in range(target_w):
@@ -181,20 +196,35 @@ class AIBeaconDetector(PerceptionEngine):
         detections = []
         hm_h, hm_w = heatmap.shape
 
-        # Find peaks
-        heatmap_copy = heatmap.copy()
-        for _ in range(self._model_config.max_detections):
-            idx = np.argmax(heatmap_copy)
-            py, px = divmod(int(idx), hm_w)
-            conf = float(heatmap_copy[py, px])
-
-            if conf < self._model_config.peak_threshold:
-                break
-
+        # Find peaks as connected blobs above threshold, each localized
+        # by intensity-weighted centroid (robust to plateau heatmaps;
+        # argmax + fixed suppression scatters across flat peaks).
+        import cv2
+        thr = float(self._model_config.peak_threshold)
+        mask = (heatmap >= thr).astype(np.uint8)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(
+            mask, connectivity=8)
+        blobs = []
+        for label_id in range(1, num):
+            area = float(stats[label_id, cv2.CC_STAT_AREA])
+            if area <= 0:
+                continue
+            ys, xs = np.where(labels == label_id)
+            wts = heatmap[ys, xs].astype(np.float64)
+            total = float(np.sum(wts))
+            if total <= 0:
+                continue
+            cx = float(np.sum(xs * wts) / total)
+            cy = float(np.sum(ys * wts) / total)
+            conf = float(np.max(wts))
+            blobs.append((conf, area, cx, cy))
+        blobs.sort(key=lambda t: t[0], reverse=True)
+        for _ in range(min(self._model_config.max_detections, len(blobs))):
+            conf, area, cx, cy = blobs.pop(0)
             # Map back to original image coordinates
-            center_x, center_y, _ = decode_heatmap_center(
-                heatmap_copy, orig_width, orig_height
-            )
+            center_x, center_y = model_to_source(
+                cx, cy, hm_w, hm_h, orig_width, orig_height)
+            conf = float(conf)
 
             # Estimate bounding box from heatmap spread
             bbox_half = max(2, int(self._model_config.heatmap_sigma * 2))
@@ -225,13 +255,5 @@ class AIBeaconDetector(PerceptionEngine):
                 diagnostics={"heatmap_value": conf},
             )
             detections.append(detection)
-
-            # Suppress neighborhood
-            r = 3
-            y_min = max(0, py - r)
-            y_max = min(hm_h, py + r + 1)
-            x_min = max(0, px - r)
-            x_max = min(hm_w, px + r + 1)
-            heatmap_copy[y_min:y_max, x_min:x_max] = 0.0
 
         return detections

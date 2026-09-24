@@ -16,8 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from fsoc_tracker.ai.mission import ObservationFeatures
 from fsoc_tracker.ai.learned import observation_vector
+from fsoc_tracker.ai.mission import ObservationFeatures
 
 
 @dataclass
@@ -94,7 +94,7 @@ class FailurePredictor:
             raise ValueError("windows and labels must have equal length")
 
         X = np.stack([self._extract_features(w) for w in windows])
-        y = np.array([1.0 if l else 0.0 for l in labels], dtype=np.float64)
+        y = np.array([1.0 if lbl else 0.0 for lbl in labels], dtype=np.float64)
 
         self._feature_mean = np.mean(X, axis=0)
         self._feature_std = np.std(X, axis=0) + 1e-8
@@ -159,7 +159,7 @@ class FailurePredictor:
             raise RuntimeError("predictor is not trained")
 
         risk_scores = self.predict_batch(windows)
-        y = np.array([1.0 if l else 0.0 for l in labels])
+        y = np.array([1.0 if lbl else 0.0 for lbl in labels])
         risk_arr = np.array(risk_scores)
 
         tp = float(np.sum((risk_arr > 0.5) & (y > 0.5)))

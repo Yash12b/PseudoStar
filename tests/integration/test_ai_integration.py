@@ -5,6 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
+from fsoc_tracker.ai.explain import ExplainabilityEngine
+from fsoc_tracker.ai.failure_predictor import FailurePredictor
 from fsoc_tracker.ai.mission import (
     AIMissionBrain,
     MissionAction,
@@ -12,12 +15,9 @@ from fsoc_tracker.ai.mission import (
     ObservationFeatures,
     Situation,
 )
-from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
-from fsoc_tracker.ai.failure_predictor import FailurePredictor
-from fsoc_tracker.ai.explain import ExplainabilityEngine
-from fsoc_tracker.pipeline.pipeline import TrackingPipeline, PipelineFrameResult
-from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
 from fsoc_tracker.control.adaptive import AdaptiveController
+from fsoc_tracker.pipeline.pipeline import PipelineFrameResult, TrackingPipeline
+from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
 from fsoc_tracker.tracking.search import SearchController
 
 

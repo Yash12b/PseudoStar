@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from fsoc_tracker.tracking.state import TrackingEvent, TrackEvent
+from fsoc_tracker.tracking.state import TrackEvent, TrackingEvent
 
 
 @dataclass

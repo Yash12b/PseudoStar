@@ -13,8 +13,8 @@ from fsoc_tracker.ai.temporal_dataset import (
     TemporalSequence,
     _compute_failure_labels,
     _compute_future_displacements,
-    _tracking_to_observation,
     _run_trajectory,
+    _tracking_to_observation,
 )
 from fsoc_tracker.tracking.state import TrackingState, TrackState
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -295,6 +295,7 @@ class _GradientSource:
         if not self._opened:
             return None
         import numpy as np
+
         from fsoc_tracker.core.models import ColorModel, Frame, SourceType
         w, h = 1280, 720
         row = np.linspace(0, 255, w, dtype=np.uint8)

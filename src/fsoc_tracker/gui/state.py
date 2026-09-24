@@ -95,7 +95,7 @@ class TargetView:
     pixel_y: float = 0.0
     size_px: float = 10.0
     trajectory_type: str = ""
-    trail: list[tuple[float, float]] = field(default_factory=list)
+    trail: list[tuple[float, ...]] = field(default_factory=list)
 
 
 @dataclass
@@ -267,6 +267,12 @@ class ApplicationViewState:
     source_info: str = ""
     events: list[EventLogEntry] = field(default_factory=list)
 
+    # Handoff readiness: coarse alignment stable enough for a future
+    # fine-pointing stage (GT-free: lock + low uncertainty/residual held
+    # for a consecutive streak). Set by the worker every frame.
+    handoff_ready: bool = False
+    handoff_stable_s: float = 0.0
+
     terminal_a: TerminalView = field(default_factory=TerminalView)
     terminal_b: TerminalView = field(default_factory=TerminalView)
     optical_link: OpticalLinkView = field(default_factory=OpticalLinkView)
@@ -275,6 +281,7 @@ class ApplicationViewState:
 
     # Separate concepts
     selected_object_id: int | None = None
+    selected_terminal_a: bool = False
     designated_beacon_id: int | None = None
     tracked_target_id: int | None = None
     terminal_a_id: str = "TERM_A"
@@ -287,6 +294,9 @@ class ApplicationViewState:
     show_debug_overlay: bool = True
     show_trail: bool = True
     view_mode: str = "raw"
+    # Camera boresight aim-point history (world x,y,z), oldest first.
+    # Bounded in the worker; rendered as the search sweep trail.
+    camera_trail: list[tuple[float, float, float]] = field(default_factory=list)
 
     # Beacon AI state
     scan_active: bool = False

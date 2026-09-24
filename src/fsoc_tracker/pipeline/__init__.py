@@ -5,14 +5,14 @@ source adapters, SessionController, and run-manager.
 """
 
 from fsoc_tracker.pipeline.pipeline import TrackingPipeline
-from fsoc_tracker.pipeline.session import SessionController, RunState
+from fsoc_tracker.pipeline.session import RunState, SessionController
 from fsoc_tracker.pipeline.sources import (
-    FrameSource,
-    SimulationSource,
-    VirtualSimulationSource,
-    VideoSource,
-    LiveSource,
     DatasetSource,
+    FrameSource,
+    LiveSource,
+    SimulationSource,
+    VideoSource,
+    VirtualSimulationSource,
 )
 
 __all__ = [

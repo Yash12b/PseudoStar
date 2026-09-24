@@ -11,11 +11,11 @@ from __future__ import annotations
 import math
 
 from fsoc_tracker.control.command import ControlCommand, ControlTelemetry
-from fsoc_tracker.control.config import ControlMode, ControllerConfig
+from fsoc_tracker.control.config import ControllerConfig, ControlMode
 from fsoc_tracker.control.pid import PIDController
 from fsoc_tracker.simulation.camera.projection import pixel_to_angle
 from fsoc_tracker.simulation.camera.state import CameraIntrinsics
-from fsoc_tracker.tracking.state import TrackState, TrackingState
+from fsoc_tracker.tracking.state import TrackingState, TrackState
 
 
 class CoarsePointingController:
@@ -223,10 +223,7 @@ class CoarsePointingController:
             self._mode = ControlMode.TRACK
             self._prediction_start_time_s = 0.0
 
-        elif ts == TrackState.REACQUIRING:
-            self._mode = ControlMode.TRACK
-
-        elif ts == TrackState.ACQUIRING:
+        elif ts == TrackState.REACQUIRING or ts == TrackState.ACQUIRING:
             self._mode = ControlMode.TRACK
 
         elif ts == TrackState.SEARCHING:

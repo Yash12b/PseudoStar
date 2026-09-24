@@ -38,6 +38,8 @@ class SimulationEngine:
         self._step_count: int = 0
         self._targets: list[_ManagedTarget] = []
         self._platform = PlatformState()
+        self._platform_motion: str = "static"
+        self._platform_motion_params: dict[str, Any] = {}
         self._registry = TrajectoryRegistry()
         self._primary_beacon_id: int | None = None
 
@@ -75,6 +77,15 @@ class SimulationEngine:
         self._platform.z = scenario.terminal.z
         self._platform.yaw_deg = scenario.terminal.yaw_deg
         self._platform.pitch_deg = scenario.terminal.pitch_deg
+        # Platform motion (Terminal A itself moves, e.g. two
+        # satellites): validated name + params, stepped every frame.
+        from fsoc_tracker.simulation.platform import PLATFORM_MOTIONS
+        motion = str(getattr(scenario.terminal, "platform_motion", "static"))
+        if motion not in PLATFORM_MOTIONS:
+            raise ValueError(f"Unknown platform motion: {motion!r}")
+        self._platform_motion = motion
+        self._platform_motion_params = dict(
+            getattr(scenario.terminal, "platform_motion_params", {}) or {})
 
         # Add each beacon with its independent trajectory
         for bc in scenario.beacons:
@@ -96,10 +107,12 @@ class SimulationEngine:
             target = WorldTargetState(
                 target_id=bc.beacon_id,
                 active=bc.active,
-                shape="square",
+                shape=getattr(bc, "shape", "square") or "square",
                 width=bc.size_px / 640.0,  # normalize to image fraction
                 height=bc.size_px / 480.0,
                 brightness=bc.brightness,
+                code=getattr(bc, "code", "") or "",
+                size_px=float(bc.size_px),
                 seed=bc.seed,
                 spawn_time_s=self._time_s,
             )
@@ -169,6 +182,66 @@ class SimulationEngine:
                     self._primary_beacon_id = None
                 return True
         return False
+
+    def reconfigure_beacon(
+        self,
+        target_id: int,
+        trajectory_type: str | None = None,
+        trajectory_params: dict | None = None,
+        size_px: float | None = None,
+        brightness: float | None = None,
+        shape: str | None = None,
+        seed: int | None = None,
+    ) -> bool:
+        """Edit a live beacon in place. Returns True if applied.
+
+        Only the supplied fields change; everything else is preserved.
+        Swapping the trajectory rebuilds it from the registry and
+        re-evaluates the target state at the current time.
+        """
+        for managed in self._targets:
+            if managed.target.target_id != target_id:
+                continue
+            target = managed.target
+            if trajectory_type is not None:
+                try:
+                    traj = self._registry.create(
+                        trajectory_type, dict(trajectory_params or {}))
+                except Exception:
+                    return False
+                managed.trajectory = traj
+                target.trajectory_type = trajectory_type
+                target.trajectory_params = dict(trajectory_params or {})
+                try:
+                    px, py, pz = traj.position(self._time_s)
+                    vx, vy, vz = traj.velocity(self._time_s)
+                    target.x, target.y, target.z = px, py, pz
+                    target.vx, target.vy, target.vz = vx, vy, vz
+                except Exception:
+                    pass
+            if size_px is not None:
+                target.size_px = float(size_px)
+                target.width = float(size_px) / 640.0
+                target.height = float(size_px) / 480.0
+            if brightness is not None:
+                target.brightness = float(brightness)
+            if shape is not None:
+                target.shape = str(shape)
+            if seed is not None:
+                target.seed = int(seed)
+            return True
+        return False
+
+    def set_platform_pose(
+        self, x: float, y: float, z: float,
+        yaw_deg: float, pitch_deg: float,
+    ) -> None:
+        """Set Terminal A platform position and orientation."""
+        self._platform.x = float(x)
+        self._platform.y = float(y)
+        self._platform.z = float(z)
+        self._platform.yaw_deg = float(yaw_deg)
+        self._platform.pitch_deg = float(pitch_deg)
 
     def get_terminal_pose(self) -> tuple[float, float, float, float, float]:
         """Terminal A pose as (x, y, z, yaw_deg, pitch_deg)."""
@@ -286,6 +359,9 @@ class SimulationEngine:
             width=d.get("width", 0.01),
             height=d.get("height", 0.01),
             brightness=d.get("brightness", 1.0),
+            code=d.get("code", "") or "",
+            size_px=d.get("size_px"),
+            seed=d.get("seed", 42),
             trajectory_type=trajectory_type,
             trajectory_params=d.get("trajectory_params", {}),
             spawn_time_s=d.get("spawn_time_s", self._time_s),
@@ -348,7 +424,11 @@ class SimulationEngine:
             target.vx, target.vy, target.vz = new_vx, new_vy, new_vz
             target.current_time_s = self._time_s
 
-        # Platform stays stationary in Stage 2
+        # Platform motion (Terminal A itself moves): constant drift
+        # integrates here; "static" only stamps time (Stage-2 behavior).
+        from fsoc_tracker.simulation.platform import step_platform
+        step_platform(self._platform, self._platform_motion,
+                      self._platform_motion_params, dt)
         self._platform.timestamp_s = self._time_s
 
         return self.get_state()
@@ -392,6 +472,9 @@ class SimulationEngine:
                 width=m.target.width,
                 height=m.target.height,
                 brightness=m.target.brightness,
+                code=m.target.code,
+                size_px=m.target.size_px,
+                seed=m.target.seed,
                 trajectory_type=m.target.trajectory_type,
                 trajectory_params=m.target.trajectory_params,
                 spawn_time_s=m.target.spawn_time_s,

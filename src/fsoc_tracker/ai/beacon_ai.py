@@ -28,8 +28,8 @@ from typing import Any
 
 import numpy as np
 
-from fsoc_tracker.simulation.camera.state import CameraIntrinsics
 from fsoc_tracker.simulation.camera.projection import pixel_to_angle
+from fsoc_tracker.simulation.camera.state import CameraIntrinsics
 
 
 class BeaconStatus(Enum):

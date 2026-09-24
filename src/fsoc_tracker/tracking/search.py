@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 
-
 class SearchStrategy(Enum):
     """The 5 search strategies."""
     LOCAL_LAST_KNOWN = "local_last_known"
@@ -55,6 +54,7 @@ class SearchState:
     total_search_time_s: float = 0.0
     pattern_angle_rad: float = 0.0
     pattern_step: int = 0
+    cell_frames: int = 0
     spiral_radius_px: float = 0.0
     detection_during_search: bool = False
     reacquired: bool = False
@@ -68,6 +68,7 @@ class SearchState:
             "frames": self.frames_in_search,
             "time_s": round(self.total_search_time_s, 3),
             "step": self.pattern_step,
+            "cell_frames": self.cell_frames,
             "reacquired": self.reacquired,
         }
 
@@ -95,10 +96,14 @@ class SearchConfig:
     predictive_horizon_s: float = 0.5
     predictive_radius_px: float = 80.0
 
-    # Spiral
+    # Spiral (Archimedean, constant linear speed along the path).
+    # Pitch matches one viewport height minus overlap per revolution;
+    # the per-frame angle step dθ = S/sqrt(b²+r²) sweeps equal path
+    # length per frame, unlike fixed angular steps whose outer loops
+    # race ahead (uniform sky coverage at any mount rate limit).
     spiral_max_radius_px: float = 250.0
-    spiral_angular_step_rad: float = 0.4
-    spiral_radial_step_px: float = 8.0
+    spiral_pitch_px: float = 336.0
+    spiral_arc_step_px: float = 12.0
 
     # Global sweep
     global_sweep_rows: int = 4
@@ -107,6 +112,14 @@ class SearchConfig:
     # The sweep must cover real sky (not just the current frame), so the
     # span is much wider than one FOV.
     sweep_span_deg: float = 30.0
+    # Dwell: advance to the next raster cell once the mount is within
+    # this tolerance of the current cell target (a fixed frame cadence
+    # outruns the 5 deg/s mount, so the sweep would jitter around the
+    # origin forever instead of covering sky).
+    global_arrive_tol_deg: float = 2.0
+    # Backstop: advance anyway after this many frames on one cell, so a
+    # cell can never stall the sweep.
+    global_cell_dwell_max_frames: int = 90
 
     # Safety
     # Sweep-cycle length: on expiry the sweep recycles at EXPANDING_SPIRAL
@@ -240,7 +253,8 @@ class SearchController:
             s.phase = SearchPhase.EXPANDING_SPIRAL
             s.strategy = SearchStrategy.EXPANDING_SPIRAL
             s.frames_in_search = 0
-            s.pattern_step = 0
+            # pattern_step preserved (spiral angle continues; zeroing it
+            # would restart the global raster every cycle).
             s.pattern_angle_rad = 0.0
             s.search_center_x = self._last_known_x
             s.search_center_y = self._last_known_y
@@ -344,8 +358,12 @@ class SearchController:
         s.phase = next_phase
         s.strategy = strategy_map[next_phase]
         s.frames_in_search = 0
-        s.pattern_step = 0
+        # NOTE: pattern_step is deliberately NOT reset here (except for
+        # the spiral branch below): the global raster must keep its progress
+        # across phase visits, otherwise the sweep restarts at cell 0 every
+        # visit and never covers the sky.
         s.pattern_angle_rad = 0.0
+        s.cell_frames = 0
 
         # Set initial state for each phase
         if next_phase == SearchPhase.UNCERTAINTY_REGION:
@@ -378,12 +396,14 @@ class SearchController:
             s.search_center_y = self._last_known_y
             s.search_radius_px = cfg.spiral_max_radius_px
             s.spiral_radius_px = 0.0
-            s.pattern_step = 0
+            # pattern_step intentionally preserved (spiral angle continues;
+            # zeroing it here would restart the global raster every cycle).
 
         elif next_phase == SearchPhase.GLOBAL_SWEEP:
             s.search_center_x = w / 2.0
             s.search_center_y = h / 2.0
             s.search_radius_px = max(w, h)
+            s.cell_frames = 0
 
     def _compute_search_motion(self, dt: float) -> None:
         """Compute bounded pan/tilt rate commands for current search phase."""
@@ -420,14 +440,18 @@ class SearchController:
             tilt_rate = self._clamp_rate(target_tilt - self._current_tilt_deg, cfg.max_tilt_rate_deg_s)
 
         elif s.phase == SearchPhase.EXPANDING_SPIRAL:
-            # Update spiral position
+            # Constant-linear-speed spiral position.
+            b = cfg.spiral_pitch_px / (2.0 * math.pi)
+            r_now = min(cfg.spiral_max_radius_px, b * s.pattern_angle_rad)
+            dtheta = cfg.spiral_arc_step_px / max(
+                math.sqrt(b * b + r_now * r_now), 1.0)
+            s.pattern_angle_rad += dtheta
             s.spiral_radius_px = min(
-                cfg.spiral_max_radius_px,
-                s.spiral_radius_px + cfg.spiral_radial_step_px,
-            )
-            angle = s.pattern_step * cfg.spiral_angular_step_rad
-            spiral_x = s.search_center_x + s.spiral_radius_px * math.cos(angle)
-            spiral_y = s.search_center_y + s.spiral_radius_px * math.sin(angle)
+                cfg.spiral_max_radius_px, b * s.pattern_angle_rad)
+            spiral_x = (s.search_center_x
+                        + s.spiral_radius_px * math.cos(s.pattern_angle_rad))
+            spiral_y = (s.search_center_y
+                        + s.spiral_radius_px * math.sin(s.pattern_angle_rad))
             target_pan = self._pan_from_image_x(spiral_x)
             target_tilt = self._tilt_from_image_y(spiral_y)
             pan_rate = self._clamp_rate(target_pan - self._current_pan_deg, cfg.max_pan_rate_deg_s)
@@ -436,9 +460,13 @@ class SearchController:
 
         elif s.phase == SearchPhase.GLOBAL_SWEEP:
             # Raster scan over real sky: grid cells map across
-            # +/- sweep_span_deg around the search origin.
-            row = s.pattern_step // cfg.global_sweep_cols
-            col = s.pattern_step % cfg.global_sweep_cols
+            # +/- sweep_span_deg around the search origin. Cells advance
+            # on mount arrival (dwell), never on a fixed cadence, with a
+            # per-cell frame cap as backstop.
+            total_cells = cfg.global_sweep_rows * cfg.global_sweep_cols
+            cell = s.pattern_step % total_cells
+            row = cell // cfg.global_sweep_cols
+            col = cell % cfg.global_sweep_cols
             span = cfg.sweep_span_deg
             target_pan = self._origin_pan_deg + (
                 (col + 0.5) / cfg.global_sweep_cols * 2.0 - 1.0) * span
@@ -446,10 +474,16 @@ class SearchController:
                 (row + 0.5) / cfg.global_sweep_rows * 2.0 - 1.0) * span * 0.5
             pan_rate = self._clamp_rate(target_pan - self._current_pan_deg, cfg.max_pan_rate_deg_s * 0.8)
             tilt_rate = self._clamp_rate(target_tilt - self._current_tilt_deg, cfg.max_tilt_rate_deg_s * 0.8)
-            if s.frames_in_search % 8 == 0:
+            s.cell_frames += 1
+            arrived = (abs(target_pan - self._current_pan_deg) <= cfg.global_arrive_tol_deg
+                       and abs(target_tilt - self._current_tilt_deg) <= cfg.global_arrive_tol_deg)
+            if arrived or s.cell_frames >= cfg.global_cell_dwell_max_frames:
                 s.pattern_step += 1
-            if s.pattern_step >= cfg.global_sweep_rows * cfg.global_sweep_cols:
-                s.pattern_step = 0  # restart sweep
+                s.cell_frames = 0
+            if s.pattern_step >= total_cells * 1000:
+                # Wrap the ever-growing step to keep numbers small; the
+                # modulo above keeps the raster itself cycling forever.
+                s.pattern_step %= total_cells
 
         self._pan_rate_deg_s = pan_rate
         self._tilt_rate_deg_s = tilt_rate

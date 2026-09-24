@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from fsoc_tracker.ai.temporal_dataset import HORIZONS_S, FEATURE_DIM
+from fsoc_tracker.ai.temporal_dataset import FEATURE_DIM, HORIZONS_S
 
 
 def last_position_baseline(
@@ -177,8 +177,9 @@ def run_gru_evaluation(
     Args:
         eval_timestep: Which timestep index to evaluate at (default 150 of 300).
     """
-    from fsoc_tracker.ai.neural import build_temporal_predictor
     import torch
+
+    from fsoc_tracker.ai.neural import build_temporal_predictor
     
     features, targets, mask = load_dataset_split(dataset_dir, split)
     N, T, H, _ = targets.shape

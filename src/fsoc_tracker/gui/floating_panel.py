@@ -6,16 +6,16 @@ Panels can be opened, closed, collapsed, moved, and resized.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QPoint
-from PySide6.QtGui import QMouseEvent, QColor
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QFrame,
-    QGraphicsDropShadowEffect,
+    QVBoxLayout,
+    QWidget,
 )
 
 

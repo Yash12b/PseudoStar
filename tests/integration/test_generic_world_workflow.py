@@ -19,9 +19,7 @@ from fsoc_tracker.simulation.world_builder import (
     randomize_world,
     remove_beacon,
     restart_simulation,
-    set_beacon_motion,
     set_disturbance,
-    set_manual_control,
     set_primary_beacon,
     set_terminal_a_orientation,
 )

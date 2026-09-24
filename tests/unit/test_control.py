@@ -34,19 +34,17 @@ BB. Control mode transitions
 from __future__ import annotations
 
 import math
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from fsoc_tracker.control.command import ControlCommand, ControlTelemetry
-from fsoc_tracker.control.config import ControlMode, ControllerConfig
+from fsoc_tracker.control.command import ControlCommand
+from fsoc_tracker.control.config import ControllerConfig, ControlMode
 from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.control.pid import PIDController
 from fsoc_tracker.simulation.camera.state import CameraIntrinsics
-from fsoc_tracker.tracking.state import TrackState, TrackingState
-
+from fsoc_tracker.tracking.state import TrackingState, TrackState
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -426,11 +424,11 @@ class TestControllerConfig:
         assert cfg.enabled is False
 
     def test_config_validation_rejects_negative_gains(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ControllerConfig(pan_kp=-1.0)
 
     def test_config_validation_rejects_zero_rate_limit(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ControllerConfig(max_pan_rate_deg_s=0.0)
 
 
@@ -884,9 +882,9 @@ class TestVariableFPS:
 
 class TestControllerTrackerIntegration:
     def test_tracker_output_feeds_controller(self):
-        from fsoc_tracker.tracking.tracker import KalmanTracker
+        from fsoc_tracker.perception.models import BeaconDetection
         from fsoc_tracker.tracking.config import TrackerConfig
-        from fsoc_tracker.perception.models import BeaconDetection, PerceptionStatus, TargetClass
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         tracker_cfg = TrackerConfig()
         tracker = KalmanTracker(tracker_cfg)

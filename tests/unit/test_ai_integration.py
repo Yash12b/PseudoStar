@@ -12,27 +12,24 @@ Validates:
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
 
-from fsoc_tracker.ai.runtime_predictor import (
-    ConstantVelocityPredictor,
-    GRUPredictor,
-    RuntimePredictor,
-    HORIZONS_S,
-)
 from fsoc_tracker.ai.runtime_features import (
     ObservableFeatures,
     RuntimeFeatureExtractor,
 )
 from fsoc_tracker.ai.runtime_integration import (
     SafetyGate,
-    AIDecision,
 )
-from fsoc_tracker.tracking.state import TrackingState, TrackState
+from fsoc_tracker.ai.runtime_predictor import (
+    HORIZONS_S,
+    ConstantVelocityPredictor,
+    GRUPredictor,
+    RuntimePredictor,
+)
 from fsoc_tracker.simulation.camera.state import CameraIntrinsics
+from fsoc_tracker.tracking.state import TrackingState, TrackState
 
 
 def _make_state(
@@ -274,7 +271,7 @@ class TestSafetyGate:
     def test_blocks_when_prediction_too_large(self):
         gate = SafetyGate(max_prediction_displacement_px=100)
         f = ObservableFeatures(track_state="TRACKING")
-        from fsoc_tracker.ai.runtime_predictor import TemporalPrediction, HorizonPrediction
+        from fsoc_tracker.ai.runtime_predictor import HorizonPrediction, TemporalPrediction
         pred = TemporalPrediction(
             predictions=[HorizonPrediction(
                 horizon_s=0.5, displacement_x_px=500, displacement_y_px=0,
@@ -321,7 +318,7 @@ class TestSafetyGate:
             fov_margin_x=0.01,  # critical
             fov_margin_y=0.5,
         )
-        from fsoc_tracker.ai.runtime_predictor import TemporalPrediction, HorizonPrediction
+        from fsoc_tracker.ai.runtime_predictor import HorizonPrediction, TemporalPrediction
         pred = TemporalPrediction(
             predictions=[HorizonPrediction(
                 horizon_s=0.1, displacement_x_px=20, displacement_y_px=0,
@@ -364,6 +361,7 @@ class TestGTBoundary:
 
     def test_runtime_integration_no_gt_imports(self):
         import inspect
+
         import fsoc_tracker.ai.runtime_integration as ri
         source = inspect.getsource(ri)
         assert "WorldTruth" not in source

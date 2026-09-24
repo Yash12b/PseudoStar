@@ -27,19 +27,16 @@ from __future__ import annotations
 
 import math
 import tempfile
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
 
 from fsoc_tracker.ai.benchmark import (
-    CentroidMetrics,
     BenchmarkResult,
     benchmark_detector,
     compare_detectors,
 )
-from fsoc_tracker.ai.config import AIModelConfig, DatasetConfig, ModelArchitecture, TrainingConfig
+from fsoc_tracker.ai.config import AIModelConfig, DatasetConfig
 from fsoc_tracker.ai.dataset import (
     BeaconLabel,
     DatasetSample,
@@ -50,12 +47,10 @@ from fsoc_tracker.ai.dataset import (
 from fsoc_tracker.ai.export import load_model, save_model
 from fsoc_tracker.ai.hybrid import FusionPolicy, HybridBeaconDetector
 from fsoc_tracker.ai.inference import AIBeaconDetector
-from fsoc_tracker.ai.model import BeaconCNN, ModelOutput, _relu, _sigmoid
-from fsoc_tracker.ai.training import TrainingResult, _generate_heatmap, train
+from fsoc_tracker.ai.model import BeaconCNN
+from fsoc_tracker.ai.training import TrainingResult, _generate_heatmap
 from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.perception.config import PerceptionConfig
-from fsoc_tracker.perception.models import PerceptionResult, PerceptionStatus
-
+from fsoc_tracker.perception.models import PerceptionResult
 
 # ---------------------------------------------------------------------------
 # Helpers

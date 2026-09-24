@@ -170,7 +170,7 @@ def apply_distractors(
     h, w = image.shape[:2]
     result = image.copy()
 
-    for i in range(count):
+    for _ in range(count):
         # Deterministic positions based on seed + index + time
         base_x = rng.uniform(50, w - 50)
         base_y = rng.uniform(50, h - 50)

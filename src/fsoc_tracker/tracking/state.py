@@ -104,6 +104,13 @@ class TrackingState:
     # Prediction-only flag
     prediction_only: bool = False
 
+    # Set when this frame's update came from the rescue pass
+    rescued_by_low_conf: bool = False
+
+    # Coded-identity match fraction of the associated detection vs the
+    # operator-configured expected code (0.5 = no identity evidence)
+    identity_match: float = 0.5
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "state": self.state.name,
@@ -133,4 +140,5 @@ class TrackingState:
             "acquisition_time_s": self.acquisition_time_s,
             "reacquisition_duration_s": self.reacquisition_duration_s,
             "prediction_only": self.prediction_only,
+            "identity_match": self.identity_match,
         }

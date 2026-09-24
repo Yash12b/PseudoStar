@@ -15,14 +15,12 @@ import pytest
 
 from fsoc_tracker.core.interfaces import FrameSource
 from fsoc_tracker.core.models import (
-    ColorModel,
     Estimate,
     Frame,
     Observation,
     SourceType,
     WorldTruth,
 )
-
 
 # ---------------------------------------------------------------------------
 # 1. Simulation source produces Frame
@@ -32,13 +30,13 @@ class TestSimulationSourceProducesFrame:
     """VirtualSimulationSource must yield Frame objects with source_type=SIMULATION."""
 
     def test_returns_frame_type(self) -> None:
-        from fsoc_tracker.simulation.engine import SimulationEngine
-        from fsoc_tracker.simulation.world import WorldConfig
+        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.engine import SimulationEngine
         from fsoc_tracker.simulation.sensor.config import SensorConfig
         from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
+        from fsoc_tracker.simulation.world import WorldConfig
 
         wc = WorldConfig(width=2000.0, height=2000.0, random_seed=42)
         engine = SimulationEngine(wc)
@@ -70,13 +68,13 @@ class TestSimulationSourceProducesFrame:
         assert issubclass(VirtualSimulationSource, FrameSource)
 
     def test_gt_excluded_by_default(self) -> None:
-        from fsoc_tracker.simulation.engine import SimulationEngine
-        from fsoc_tracker.simulation.world import WorldConfig
+        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.engine import SimulationEngine
         from fsoc_tracker.simulation.sensor.config import SensorConfig
         from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
+        from fsoc_tracker.simulation.world import WorldConfig
 
         wc = WorldConfig(width=2000.0, height=2000.0, random_seed=42)
         engine = SimulationEngine(wc)
@@ -97,14 +95,14 @@ class TestSimulationSourceProducesFrame:
         assert "ground_truth" not in frame.metadata
 
     def test_eval_sink_not_frame(self) -> None:
-        from fsoc_tracker.simulation.engine import SimulationEngine
-        from fsoc_tracker.simulation.world import WorldConfig
+        from fsoc_tracker.pipeline.eval import EvalSink
+        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.engine import SimulationEngine
         from fsoc_tracker.simulation.sensor.config import SensorConfig
         from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
-        from fsoc_tracker.pipeline.eval import EvalSink
+        from fsoc_tracker.simulation.world import WorldConfig
 
         wc = WorldConfig(width=2000.0, height=2000.0, random_seed=42)
         engine = SimulationEngine(wc)
@@ -127,11 +125,11 @@ class TestSimulationSourceProducesFrame:
         assert sink.primary_for(0) is not None
 
     def test_gt_on_frame_rejected(self) -> None:
-        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
 
         wc_setup = self  # unused placeholder to keep class grouping
-        from fsoc_tracker.core.models import Frame, ColorModel, SourceType
         import numpy as np
+
+        from fsoc_tracker.core.models import ColorModel, Frame, SourceType
         img = np.zeros((8, 8), dtype=np.uint8)
         with pytest.raises(ValueError, match="ground_truth"):
             Frame(
@@ -142,13 +140,13 @@ class TestSimulationSourceProducesFrame:
             )
 
     def test_positional_seed_cannot_enable_gt(self) -> None:
-        from fsoc_tracker.simulation.engine import SimulationEngine
-        from fsoc_tracker.simulation.world import WorldConfig
+        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.engine import SimulationEngine
         from fsoc_tracker.simulation.sensor.config import SensorConfig
         from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-        from fsoc_tracker.pipeline.sources import VirtualSimulationSource
+        from fsoc_tracker.simulation.world import WorldConfig
 
         wc = WorldConfig(width=2000.0, height=2000.0, random_seed=42)
         engine = SimulationEngine(wc)
@@ -170,9 +168,10 @@ class TestVideoSourceInterface:
         assert issubclass(VideoSource, FrameSource)
 
     def test_produces_frame_with_video_source_type(self) -> None:
-        import cv2
         import os
         import tempfile
+
+        import cv2
 
         # Create a tiny test video
         tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
@@ -205,9 +204,9 @@ class TestVideoSourceInterface:
     def test_all_sources_produce_same_frame_type(self) -> None:
         """All FrameSource subclasses produce the same Frame dataclass."""
         from fsoc_tracker.pipeline.sources import (
-            VideoSource,
-            LiveSource,
             DatasetSource,
+            LiveSource,
+            VideoSource,
             VirtualSimulationSource,
         )
         for cls in [VirtualSimulationSource, VideoSource, LiveSource, DatasetSource]:
@@ -245,9 +244,9 @@ class TestDownstreamConsumesGenericFrame:
 
     def test_controller_works_with_tracking_state(self) -> None:
         """CoarsePointingController.compute() takes TrackingState + intrinsics, not Frame."""
-        from fsoc_tracker.tracking.tracker import KalmanTracker
         from fsoc_tracker.control.controller import CoarsePointingController
         from fsoc_tracker.simulation.camera.state import CameraIntrinsics
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         tracker = KalmanTracker()
         controller = CoarsePointingController()
@@ -271,8 +270,9 @@ class TestRuntimeAINoGroundTruth:
 
     def test_beacon_ai_update_signature(self) -> None:
         """FSocBeaconAI.update() takes TrackingState + intrinsics, not world targets."""
-        from fsoc_tracker.ai.beacon_ai import FSocBeaconAI
         import inspect
+
+        from fsoc_tracker.ai.beacon_ai import FSocBeaconAI
 
         sig = inspect.signature(FSocBeaconAI.update)
         params = list(sig.parameters.keys())

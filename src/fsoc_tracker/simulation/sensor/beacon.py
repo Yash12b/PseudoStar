@@ -19,6 +19,7 @@ def deposit_beacon(
     size_px: float,
     peak_intensity: float,
     config: SensorConfig,
+    shape_override: str | None = None,
 ) -> None:
     """Deposit a beacon spot onto the image at sub-pixel location.
 
@@ -32,15 +33,24 @@ def deposit_beacon(
         size_px: Apparent diameter/width of the beacon in pixels.
         peak_intensity: Peak pixel value at beacon center.
         config: Sensor configuration.
+        shape_override: Per-target shape ("square", "circular", "spot" /
+            "gaussian"). None keeps the config default. "spot" forces a
+            soft Gaussian regardless of the soft-edges flag; the other
+            values respect it. With default config (soft edges on) all
+            shapes render identically to the previous behavior.
     """
     if size_px <= 0:
         return
 
     half = size_px / 2.0
 
-    if config.beacon_soft_edges:
+    shape = (shape_override or config.beacon_shape.value
+             if isinstance(config.beacon_shape, BeaconShape)
+             else (shape_override or config.beacon_shape))
+    shape = str(shape).lower()
+    if shape in ("spot", "gaussian") or config.beacon_soft_edges:
         _deposit_soft_beacon(image, cx, cy, half, peak_intensity, config)
-    elif config.beacon_shape == BeaconShape.CIRCULAR:
+    elif shape == BeaconShape.CIRCULAR.value:
         _deposit_hard_circular(image, cx, cy, half, peak_intensity)
     else:
         _deposit_hard_square(image, cx, cy, half, peak_intensity)

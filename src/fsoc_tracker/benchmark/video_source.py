@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 from fsoc_tracker.core.interfaces import FrameSource
 from fsoc_tracker.core.models import ColorModel, Frame, SourceType
 
@@ -194,9 +193,37 @@ class VideoBenchmarkSource(FrameSource):
         if self._cap is None:
             return False
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_index))
-        self._frame_index = frame_index
-        self._last_timestamp_s = -1.0
-        return True
+        actual = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+        if actual == int(frame_index):
+            self._frame_index = int(frame_index)
+            self._last_timestamp_s = -1.0
+            return True
+        return False
+
+    @property
+    def position_frames(self) -> int | None:
+        """Decoder's current frame position, or None when unavailable."""
+        if self._cap is None:
+            return None
+        try:
+            import cv2
+            return int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+        except Exception:
+            return None
+
+    def reopen_and_seek(self, frame_index: int) -> bool:
+        """Recover a stalled decoder: re-open the file and seek.
+
+        Same sticky-EOF recovery contract as pipeline VideoSource
+        (OpenCV's ffmpeg backend returns None forever after a damaged
+        packet even though later frames decode fine).
+        """
+        try:
+            self.release()
+            self.open()
+        except Exception:
+            return False
+        return self.seek(int(frame_index))
 
     def __enter__(self) -> VideoBenchmarkSource:
         self.open()

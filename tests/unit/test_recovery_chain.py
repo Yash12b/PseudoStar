@@ -16,38 +16,30 @@ No ground truth is used to reacquire — all detection is via perception.
 
 from __future__ import annotations
 
-import math
-
-import numpy as np
 import pytest
 
+from fsoc_tracker.ai.failure_predictor import FailurePredictor
 from fsoc_tracker.ai.mission import (
+    ObservationFeatures,
     Situation,
     SituationClassifier,
-    ObservationFeatures,
-    MissionAction,
 )
-from fsoc_tracker.ai.failure_predictor import FailurePredictor
-from fsoc_tracker.tracking.search import (
-    SearchController,
-    SearchConfig,
-    SearchStrategy,
-    SearchPhase,
-)
-from fsoc_tracker.perception.adaptive_roi import AdaptiveROI, ROIConfig, ROIState
-from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.tracking.config import TrackerConfig
-from fsoc_tracker.tracking.state import TrackingState, TrackState
-from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.perception.models import PerceptionResult, BeaconDetection, PerceptionStatus
 from fsoc_tracker.control.controller import CoarsePointingController
+from fsoc_tracker.perception.adaptive_roi import AdaptiveROI, ROIConfig
+from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+from fsoc_tracker.perception.models import BeaconDetection
 from fsoc_tracker.simulation.camera.camera import VirtualCamera
-from fsoc_tracker.simulation.camera.state import CameraState, CameraIntrinsics
+from fsoc_tracker.simulation.camera.state import CameraState
 from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.world import WorldConfig
-from fsoc_tracker.simulation.sensor.config import SensorConfig
-from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-
+from fsoc_tracker.tracking.config import TrackerConfig
+from fsoc_tracker.tracking.search import (
+    SearchConfig,
+    SearchController,
+    SearchStrategy,
+)
+from fsoc_tracker.tracking.state import TrackState
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 # ---------------------------------------------------------------------------
 # Helper: simulate a target moving through the pipeline
@@ -536,26 +528,37 @@ class TestSearchWorldAnchored:
 
     def test_global_sweep_spans_sky(self):
         from fsoc_tracker.tracking.search import (
-            SearchController, SearchConfig, SearchPhase,
+            SearchConfig,
+            SearchController,
+            SearchPhase,
         )
         sc = SearchController(SearchConfig(sweep_span_deg=30.0))
         sc.begin_search(320, 240, 0, 0, 0.0,
                         current_pan_deg=0.0, current_tilt_deg=0.0)
         sc._state.phase = SearchPhase.GLOBAL_SWEEP
-        pans = []
-        for _ in range(4 * 5 * 8 + 8):
-            sc.update(1.0 / 30.0, current_pan_deg=0.0,
-                      current_tilt_deg=0.0)
-            # Record commanded direction via rate sign/magnitude sweep.
-            pans.append(sc.pan_rate_deg_s)
-        # Sweep must command both directions across a wide span;
-        # rate magnitudes near max indicate far waypoints are targeted.
-        assert max(pans) > 3.0
-        assert min(pans) < -3.0
+        # Drive the mount with the commanded rates (as the actuator
+        # would): cells advance on arrival, so sky coverage — not a fixed
+        # frame cadence — is what the sweep must achieve.
+        pan, tilt = 0.0, 0.0
+        pans, tilts = [], []
+        # Full-sky raster with mount dwells needs a few thousand frames;
+        # updates are cheap (no rendering), so run the whole sweep.
+        for _ in range(4000):
+            sc.update(1.0 / 30.0, current_pan_deg=pan,
+                      current_tilt_deg=tilt)
+            pan += sc.pan_rate_deg_s / 30.0
+            tilt += sc.tilt_rate_deg_s / 30.0
+            pans.append(pan)
+            tilts.append(tilt)
+        # Sweep must cover real sky in both directions on both axes.
+        assert max(pans) > 15.0
+        assert min(pans) < -15.0
+        assert max(tilts) > 5.0
+        assert min(tilts) < -5.0
 
     def test_sweep_follows_origin_offset(self):
         from fsoc_tracker.tracking.search import (
-            SearchController, SearchPhase,
+            SearchController,
         )
         sc = SearchController()
         sc.begin_search(100, 100, 0, 0, 0.0,
@@ -590,3 +593,32 @@ class TestRiskPreemption:
             roi._state = state
             assert roi.expand_for_risk(0.99) is False
             assert roi._state == state
+
+    def test_spiral_constant_linear_speed(self):
+        """Expanding spiral sweeps uniform path length per frame."""
+        import math
+
+        from fsoc_tracker.tracking.search import (
+            SearchController,
+            SearchPhase,
+        )
+        sc = SearchController()
+        sc.begin_search(320, 240, 0, 0, 0.0)
+        sc._state.phase = SearchPhase.EXPANDING_SPIRAL
+        prev = None
+        steps = []
+        for _ in range(35):
+            sc.update(1.0 / 30.0, current_pan_deg=0.0,
+                      current_tilt_deg=0.0)
+            assert sc._state.phase == SearchPhase.EXPANDING_SPIRAL
+            x = sc._state.search_center_x + sc._state.spiral_radius_px * math.cos(
+                sc._state.pattern_angle_rad)
+            y = sc._state.search_center_y + sc._state.spiral_radius_px * math.sin(
+                sc._state.pattern_angle_rad)
+            if prev is not None:
+                steps.append(math.hypot(x - prev[0], y - prev[1]))
+            prev = (x, y)
+        # Uniform ~12 px/frame arc steps (fixed angular steps would
+        # accelerate outward and vary several-fold over this range).
+        assert max(steps) - min(steps) < 6.0
+        assert 8.0 < sum(steps) / len(steps) < 16.0

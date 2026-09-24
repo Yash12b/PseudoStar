@@ -15,12 +15,18 @@ from fsoc_tracker.tracking.config import (
     TrackerConfig,
 )
 from fsoc_tracker.tracking.events import TrackingMetrics, TrackingMetricsCollector
+from fsoc_tracker.tracking.identity import (
+    CODE_A,
+    CODE_B,
+    CodeIdentityTracker,
+    code_bit_at,
+)
 from fsoc_tracker.tracking.kalman import KalmanFilter2D
 from fsoc_tracker.tracking.state import (
     TrackEvent,
-    TrackState,
     TrackingEvent,
     TrackingState,
+    TrackState,
 )
 from fsoc_tracker.tracking.state_machine import TrackStateMachine
 from fsoc_tracker.tracking.tracker import KalmanTracker
@@ -28,6 +34,9 @@ from fsoc_tracker.tracking.visualization import render_tracking_debug
 
 __all__ = [
     "AssociationMethod",
+    "CODE_A",
+    "CODE_B",
+    "CodeIdentityTracker",
     "FilterType",
     "KalmanFilter2D",
     "KalmanTracker",
@@ -41,6 +50,7 @@ __all__ = [
     "TrackingMetricsCollector",
     "TrackingState",
     "associate_nearest",
+    "code_bit_at",
     "euclidean_distance",
     "render_tracking_debug",
 ]

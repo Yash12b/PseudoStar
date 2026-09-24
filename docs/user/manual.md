@@ -83,6 +83,11 @@ python -m fsoc_tracker.cli.run_benchmark sim --method kalman_expert \
 # Multi-seed aggregation (mean/std across seeds)
 python -m fsoc_tracker.cli.run_benchmark sim --method kalman_expert \
     --world loss --seeds 42,43,44 --frames 300 --output logs/benchmark
+
+# Opt-in appearance-gated association (anti-hijack; default 0 = off).
+# Measured: planted-glint hijacks 24/30 -> 0/30 at weight 8.
+python -m fsoc_tracker.cli.run_benchmark sim --method kalman_expert \
+    --world distractor --seed 42 --frames 300 --assoc-appearance 8
 ```
 
 ### GUI
@@ -125,9 +130,11 @@ camera:
   update_rate_hz: 30.0    # Camera update rate (Hz)
 
 target:
-  size_px: 10.0           # Beacon size (pixels)
-  shape: square           # Beacon shape
-  motion_type: straight_line  # Trajectory type
+  size_px: 10.0           # Beacon size 5-20 px (PS default 10x10)
+  shape: square           # Beacon shape: spot (soft, default rendering),
+                          # square or circular (hard-edged spots)
+  motion_type: straight_line  # straight_line | circular | figure_8 |
+                              # random | spiral | sinusoidal | user_controlled
 
 control:
   max_pan_speed_deg_s: 5.0   # Max pan rate (deg/s)
@@ -140,8 +147,21 @@ control:
 disturbance:
   enabled: false             # Enable disturbances
   types: []                  # List of disturbance types
-  gaussian_sigma: 5.0        # Gaussian noise sigma
+  gaussian_sigma: 5.0        # Gaussian noise sigma (PS max 20)
+  salt_pepper_density: 0.05  # S&P density (PS ~10% => 0.10)
+  poisson: true              # Photon-shot Poisson noise on/off
+  jitter_amplitude_px: 5.0   # Camera jitter (PS max ±20 px/frame)
+  platform_type: linear      # linear | circular | figure_eight |
+                             # spiral | random (PS default linear)
+  platform_amplitude_px: 10.0  # Platform motion (PS max ±20 px/frame)
 ```
+
+In the GUI disturbance tab the same controls are widgets: master
+effect checkboxes, Gaussian / Salt&Pepper / Poisson subtype switches
+(all on = legacy behavior), Noise σ (0–20), S&P density (0–0.5),
+Jitter amp (0–20 px), and a Platform path combo. Presets
+(clear/light/moderate/severe/extreme) set the master switches and
+leave numeric tuning to you; changes apply live to a running worker.
 
 ---
 
@@ -233,12 +253,74 @@ explicitly created world:
    (uses the seed spin box; same seed reproduces the same world).
 2. Place Terminal A (3D view context action or worker API) — position
    and orientation are independent; the camera never auto-aims.
+   Terminal A itself can move: `set_terminal_motion(world, "drift",
+   vx=0.3, yaw_rate_deg_s=0.2)` in the world-builder API gives the
+   platform constant velocity + attitude rates (two satellites). The
+   mount rides strapdown — the camera keeps world-frame pointing and
+   the loop rejects platform motion as a pointing disturbance within
+   the 5°/s gimbal authority. (This is real platform dynamics, not the
+   Platform path combo under disturbances, which only fakes
+   image-plane jitter.)
 3. Add beacons at independent positions; assign each beacon its own
    motion model, parameters, and seed.
 4. Choose one PRIMARY BEACON (starred in the beacon list). Changing it
    never moves other beacons or the camera.
 5. Configure disturbances, then press START. START with no world is
    refused with a logged error.
+
+### Controlling a beacon (simulation mode)
+
+Only `user_controlled` beacons respond to operator input:
+
+1. Trajectory combo → `user_controlled`, then **+ Add Beacon**.
+2. Click the main window (not a spin box) and drive it with the
+   keyboard: **A/D** ±X, **Q/E** ±Y, **W/S** ±Z, **arrow keys**,
+   **Space** hold, **R** reset to spawn, **M** random maneuver.
+   Steps are 10 world units per press.
+3. Alternatively drag the beacon in the 3D world view (works for
+   user-controlled beacons; scripted trajectories own their motion).
+4. Pressing a movement key with no user-controlled beacon logs a
+   warning telling you exactly what to do.
+
+### Loading a video
+
+Two equivalent ways, both land on the Camera Tracking page tracking
+the file:
+
+1. Top bar: press the cyan **LOAD VIDEO** button and pick an
+   MP4/AVI/MOV/MKV/WebM file (bad files are rejected with a logged
+   error before anything starts).
+2. Top bar SOURCE combo → VIDEO (prompts immediately); cancelling
+   reverts the combo instead of stranding the mode.
+
+While a video runs, SEEK jumps to a frame; START with VIDEO mode and
+no file prompts for one instead of failing.
+
+Long files play through: a damaged packet mid-file no longer stops
+the run — the decoder re-opens and seeks past the unreadable stretch
+(logged as "recovered at frame N (skipped K)"), skipping further
+ahead if the damage spans seconds. The run stops only at true
+end-of-file ("Video ended after N frames (M total)") or, if the file
+is truncated/damaged past recovery, with an ERROR naming the stall
+frame and decoder position. Per-frame history is stored at 8
+bytes/entry with capped event rings, so 24-hour files stay
+resident-friendly.
+
+### Reticle legend (camera tracking page)
+
+The beacon gate is four square brackets with a + centroid marker:
+
+| Color | Meaning |
+|-------|---------|
+| Green | Locked (Kalman TRACKING + quality gate) |
+| Orange | Tracking/acquiring (estimate, not yet locked) |
+| Yellow | Detected but unlocked |
+| Red | Lost (no detection) |
+
+The amber diamond with `PRED +0.10s` tag is the AI motion forecast;
+dotted circles are estimate/prediction uncertainty. `TRK: <state>`
+text (top-left) mirrors the same state machine as the telemetry grid
+below the frame.
 
 ---
 
@@ -274,6 +356,9 @@ Key metrics:
 - **Loss percentage** — Fraction of frames with lost track (target: < 5%)
 - **Reacquisition time** — Time to re-lock after loss (target: ≤ 1s)
 - **Processing FPS** — Pipeline throughput (target: ≥ 20 FPS)
+- **Precision / Recall** — Per-frame detection classification against
+  ground truth (TP = detected within 10 px, FP = ghost/wrong target,
+  FN = missed visible target), reported in benchmark JSON + tables.
 
 ---
 
@@ -294,6 +379,33 @@ advanced:
   lock_quality: true          # Multi-factor lock score
   adaptive_control: true      # Gain scheduling
 ```
+
+### Perception backends (PERC tab)
+
+- **classical** (default, production): bright-spot detector, 100%
+  detection at 0.32 px RMSE on the noisy reference video.
+- **ai** (experimental, NOT recommended for tracking): trained
+  BeaconCNN heatmap detector (`artifacts/models/beacon-numpy-v1`,
+  weights verified at load). Measured on the same noisy video: 98.8%
+  detection rate but 297 px RMSE — it fires confidently on noise
+  structure, so the tracker follows ghosts. Useful for ablation study
+  only.
+- **hybrid** (experimental): classical+AI fusion, measured 230 px RMSE
+  on the noisy video for the same reason. Missing weights fall back to
+  classical with a logged warning (never silent random weights).
+
+Backend switches apply live, mid-run, without rebuilding state. The
+Kalman/AI-Brain toggles below are the recommended ablation tools;
+they leave detection quality intact.
+
+### Ablation toggles (PERC tab)
+
+- **Kalman Tracker** off = raw-detection tracking (estimate follows
+  detections, no filtering/prediction). Re-enabling resets the filter
+  for a clean handoff.
+- **AI Brain** off = mission policy, lead compensation, and failure
+  prediction bypassed (HUD shows DISABLED); tracking/control continue.
+- Use these to demonstrate each layer's contribution in one run.
 
 ---
 
@@ -332,3 +444,42 @@ advanced:
 | `pytest` | Run all tests |
 | `pytest --cov=fsoc_tracker` | Run tests with coverage |
 | `ruff check src/ tests/` | Lint code |
+
+---
+
+## 10. Demonstration video
+
+`artifacts/demo/` holds ready-to-play deliverables:
+
+- `demo_app_5min.mp4` — 5-minute closed-loop application demo:
+  simulated beacon on a sinusoidal 3D path (regular FOV exits and
+  re-acquisitions) with the tracking reticle, prediction marker, and
+  telemetry bar burned in. This is the optional 3–5 minute
+  demonstration deliverable.
+- `beacon_5min_3d.mp4` / `beacon_5min_inside.mp4` — clean 5-minute
+  beacon footage (no overlays) for VIDEO-mode testing: feed either
+  file to the tracker via LOAD VIDEO.
+- `ps_compliance_4min.mp4` — 4-minute problem-statement compliance
+  video: 16 back-to-back 15 s segments, one per parameter group
+  (sizes, shapes, motions, multi-target, noises, atmosphere, FOV
+  exit). Deliberately overlay-free — burned-in text would hand the
+  tracker free static targets, so segment identity lives in the table
+  below and in `scripts/generate_ps_compliance_video.py`.
+
+| Seg | Time | Parameter under test |
+|-----|------|----------------------|
+| 1 | 0:00–0:15 | Baseline: 640×480, 4°×3°, 30 fps, 10 px spot |
+| 2–3 | 0:15–0:45 | Target size 5 px / 20 px |
+| 4–5 | 0:45–1:15 | Shape circular / gaussian spot |
+| 6–10 | 1:15–2:30 | Motion circular / figure-8 / random / spiral / sinusoidal |
+| 11 | 2:30–2:45 | Multi-target ×3 |
+| 12–14 | 2:45–3:30 | Gaussian σ=20 / salt&pepper 10% / poisson + low light |
+| 15 | 3:30–3:45 | Fog + rain + jitter ±20 px |
+| 16 | 3:45–4:00 | FOV exit + re-acquisition (loss logging) |
+
+Regenerate the app demo with:
+
+```bash
+.venv/bin/python scripts/generate_demo_video.py  # 30 s smoke demo
+.venv/bin/python scripts/generate_app_demo.py    # 5 min deliverable
+```

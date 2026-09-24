@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from fsoc_tracker.benchmark.collector import MetricsCollector, FrameMetrics
+from fsoc_tracker.benchmark.collector import FrameMetrics, MetricsCollector
 from fsoc_tracker.benchmark.ground_truth import (
     GroundTruthProvider,
     NullGroundTruthProvider,
@@ -113,7 +113,7 @@ class BenchmarkEngine:
 
             self._profiler.start_stage("tracking")
             trk_state = self._tracker.update(
-                det_result.detections if det_result.primary_detection and det_result.primary_detection.detected else [],
+                list(det_result.detections),
                 frame.timestamp_s,
             )
             trk_ms = self._profiler.end_stage()
@@ -148,6 +148,7 @@ class BenchmarkEngine:
                 track_x=trk_state.estimated_x,
                 track_y=trk_state.estimated_y,
                 track_state=trk_state.state.name,
+                track_id=trk_state.track_id,
                 lock_status=trk_state.locked,
                 prediction_only=trk_state.prediction_only,
                 velocity_x=trk_state.velocity_x,
@@ -216,7 +217,7 @@ class BenchmarkEngine:
 
             self._profiler.start_stage("tracking")
             trk_state = self._tracker.update(
-                det_result.detections if det_result.primary_detection and det_result.primary_detection.detected else [],
+                list(det_result.detections),
                 frame.timestamp_s,
             )
             trk_ms = self._profiler.end_stage()
@@ -246,6 +247,7 @@ class BenchmarkEngine:
                 track_x=trk_state.estimated_x,
                 track_y=trk_state.estimated_y,
                 track_state=trk_state.state.name,
+                track_id=trk_state.track_id,
                 lock_status=trk_state.locked,
                 prediction_only=trk_state.prediction_only,
                 velocity_x=trk_state.velocity_x,

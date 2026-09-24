@@ -20,9 +20,9 @@ from fsoc_tracker.disturbances.config import (
     AtmosphereConfig,
     BlurConfig,
     BrightnessContrastConfig,
+    DistractorConfig,
     DisturbanceConfig,
     DisturbanceMode,
-    DistractorConfig,
     JitterConfig,
     MotionBlurConfig,
     NoiseConfig,
@@ -35,13 +35,13 @@ from fsoc_tracker.disturbances.context import (
     CameraPoseContext,
     DisturbanceContext,
 )
-from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
 from fsoc_tracker.disturbances.optical import (
-    apply_gaussian_blur,
-    apply_motion_blur,
     apply_brightness_contrast,
     apply_distractors,
+    apply_gaussian_blur,
+    apply_motion_blur,
 )
+from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
 
 
 def _make_context(
@@ -414,10 +414,9 @@ class TestSeverityLevels:
 class TestTrackingPerformance:
     def _run_tracking_with_disturbance(self, mode: DisturbanceMode) -> dict:
         """Run tracking pipeline with given disturbance level and return metrics."""
-        from fsoc_tracker.tracking.tracker import KalmanTracker
-        from fsoc_tracker.tracking.config import TrackerConfig
         from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-        from fsoc_tracker.perception.models import BeaconDetection
+        from fsoc_tracker.tracking.config import TrackerConfig
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         cfg = get_preset_config(mode)
         pipe = DisturbancePipeline(cfg)
@@ -483,13 +482,13 @@ class TestSeverityPerformanceMetrics:
 
     def _run_pipeline(self, mode: DisturbanceMode, num_frames: int = 100) -> dict:
         """Run the perception→tracking→control pipeline end-to-end."""
-        from fsoc_tracker.tracking.tracker import KalmanTracker
-        from fsoc_tracker.tracking.config import TrackerConfig
-        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-        from fsoc_tracker.control.controller import CoarsePointingController
         from fsoc_tracker.control.config import ControllerConfig
+        from fsoc_tracker.control.controller import CoarsePointingController
+        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
         from fsoc_tracker.simulation.camera.camera import VirtualCamera
         from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.tracking.config import TrackerConfig
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         cfg = get_preset_config(mode)
         pipe = DisturbancePipeline(cfg)

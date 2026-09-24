@@ -8,7 +8,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-
 from fsoc_tracker.core.interfaces import FrameSource
 from fsoc_tracker.core.models import ColorModel, Frame, SourceType
 

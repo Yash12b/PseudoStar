@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fsoc_tracker.pipeline.pipeline import TrackingPipeline, PipelineState
+from fsoc_tracker.pipeline.pipeline import PipelineState, TrackingPipeline
 
 
 class RunState(str, Enum):
@@ -56,6 +56,11 @@ class RunResult:
     processing_fps: float = 0.0
     mean_processing_ms: float = 0.0
     artifacts_dir: str = ""
+    # Per-frame centroid log for external comparison (BP2 evaluators
+    # compare these against predefined error values). Rows:
+    # (frame_index, timestamp_s, detected, detection_x, detection_y,
+    #  confidence, est_x, est_y, track_state, locked).
+    centroids: list[tuple] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [
@@ -105,6 +110,7 @@ class SessionController:
         self._metadata = RunMetadata()
         self._start_time: float = 0.0
         self._end_time: float = 0.0
+        self._centroid_rows: list[tuple] = []
 
     @property
     def state(self) -> RunState:
@@ -169,7 +175,29 @@ class SessionController:
         result = self._pipeline.step()
         if result is None:
             self._state = RunState.STOPPED
+            return None
+        self._centroid_rows.append(self._centroid_row(result))
         return result
+
+    @staticmethod
+    def _centroid_row(result: Any) -> tuple:
+        """Extract the per-frame centroid comparison row."""
+        perc = result.perception
+        trk = result.tracking
+        det = perc is not None and bool(perc.detected)
+        prim = perc.primary_detection if perc is not None else None
+        return (
+            result.frame_index,
+            round(result.timestamp_s, 4),
+            int(det),
+            round(float(prim.center_x), 2) if prim is not None else "",
+            round(float(prim.center_y), 2) if prim is not None else "",
+            round(float(prim.confidence), 3) if prim is not None else "",
+            round(float(trk.estimated_x), 2) if trk is not None else "",
+            round(float(trk.estimated_y), 2) if trk is not None else "",
+            trk.state.name if trk is not None else "",
+            int(bool(getattr(trk, "locked", False))) if trk is not None else 0,
+        )
 
     def stop(self) -> RunResult:
         """Stop and produce final result."""
@@ -189,6 +217,7 @@ class SessionController:
         """Reset for a new run."""
         self._pipeline.reset()
         self._state = RunState.IDLE
+        self._centroid_rows = []
 
     def _build_result(self) -> RunResult:
         ps = self._pipeline.state
@@ -211,6 +240,7 @@ class SessionController:
             reacquisition_times=list(ps.reacquisition_times),
             processing_fps=fps,
             mean_processing_ms=mean_ms,
+            centroids=list(self._centroid_rows),
         )
 
     def _save_artifacts(self, result: RunResult) -> None:
@@ -249,6 +279,14 @@ class SessionController:
                 f.write("frame,error_px\n")
                 for i, e in enumerate(result.errors):
                     f.write(f"{i},{e:.4f}\n")
+
+        # Per-frame centroid log (BP2: compare against predefined values)
+        with open(session_dir / "centroids.csv", "w") as f:
+            f.write("frame_index,timestamp_s,detected,detection_x,"
+                    "detection_y,confidence,est_x,est_y,track_state,"
+                    "locked\n")
+            for row in result.centroids:
+                f.write(",".join(str(v) for v in row) + "\n")
 
         # Summary
         with open(session_dir / "summary.txt", "w") as f:

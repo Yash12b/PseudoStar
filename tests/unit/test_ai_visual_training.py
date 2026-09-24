@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from fsoc_tracker.ai.dataset import generate_split
 from fsoc_tracker.ai.config import DatasetConfig
+from fsoc_tracker.ai.dataset import generate_split
 from fsoc_tracker.ai.visual_training import train_visual_model
 
 

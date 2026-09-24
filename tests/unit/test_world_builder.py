@@ -4,26 +4,20 @@ import math
 import pytest
 
 from fsoc_tracker.simulation.engine import SimulationEngine
-from fsoc_tracker.simulation.scenario import ScenarioConfig
 from fsoc_tracker.simulation.world import WorldConfig
 from fsoc_tracker.simulation.world_builder import (
     add_beacon,
     available_motions,
     build_benchmark_world,
+    clear_disturbance,
     clear_primary_beacon,
-    clear_world,
     create_world,
     get_terminal_a_state,
-    move_beacon,
-    move_terminal_a,
     place_terminal_a,
     randomize_world,
     remove_beacon,
     reset_world,
     restart_simulation,
-    set_beacon_motion,
-    set_disturbance,
-    clear_disturbance,
     set_manual_control,
     set_primary_beacon,
     set_terminal_a_orientation,
@@ -270,8 +264,8 @@ class TestResetRestart:
 
 class TestBenchmarkWorlds:
     def test_profiles_deterministic(self):
-        for profile in ("nominal", "multi", "distractor", "loss",
-                        "noise", "fog", "jitter"):
+        for profile in ("nominal", "multi", "distractor", "coded",
+                        "moving", "loss", "noise", "fog", "jitter"):
             a = build_benchmark_world(profile, seed=42)
             b = build_benchmark_world(profile, seed=42)
             assert [(t.x0, t.y0, t.z0, t.trajectory)

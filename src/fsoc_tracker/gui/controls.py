@@ -9,17 +9,52 @@ from fsoc_tracker.gui.theme import Colors
 try:
     from PySide6.QtCore import Qt, Signal
     from PySide6.QtWidgets import (
-        QFrame, QVBoxLayout, QTabWidget, QWidget, QGridLayout, QLabel,
-        QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton,
-        QLineEdit, QFileDialog, QSlider,
+        QCheckBox,
+        QComboBox,
+        QDoubleSpinBox,
+        QFileDialog,
+        QFrame,
+        QGridLayout,
+        QLabel,
+        QLineEdit,
+        QPushButton,
+        QSlider,
+        QSpinBox,
+        QTabWidget,
+        QVBoxLayout,
+        QWidget,
     )
 except ImportError:
     from PyQt5.QtCore import Qt, Signal  # type: ignore
     from PyQt5.QtWidgets import (
-        QFrame, QVBoxLayout, QTabWidget, QWidget, QGridLayout, QLabel,
-        QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton,
-        QLineEdit, QFileDialog,  # type: ignore
+        QCheckBox,
+        QComboBox,
+        QDoubleSpinBox,
+        QFileDialog,
+        QFrame,
+        QGridLayout,
+        QLabel,
+        QLineEdit,  # type: ignore
+        QPushButton,
+        QSpinBox,
+        QTabWidget,
+        QVBoxLayout,
+        QWidget,
     )
+
+
+def _shape_label_to_value(label: str) -> str:
+    """Map the target-shape combo label to a renderer shape value.
+
+    "Spot (soft)" is the legacy soft-Gaussian rendering; "Square" and
+    "Circular" render hard-edged spots of the selected geometry.
+    """
+    low = (label or "").lower()
+    if low.startswith("square"):
+        return "square"
+    if low.startswith("circular"):
+        return "circular"
+    return "spot"
 
 
 class ControlPanel(QFrame):
@@ -90,29 +125,34 @@ class ControlPanel(QFrame):
         layout.setSpacing(3)
 
         self._traj_combo = QComboBox()
-        self._traj_combo.addItems(["straight_line", "circular", "figure_8", "random", "spiral", "sinusoidal", "user_controlled"])
+        self._traj_combo.addItems(["straight_line", "circular", "figure_8", "random", "random_walk", "spiral", "sinusoidal", "user_controlled"])
         layout.addWidget(QLabel("Trajectory:"), 0, 0)
         layout.addWidget(self._traj_combo, 0, 1)
 
         self._target_size = QDoubleSpinBox()
-        self._target_size.setRange(3, 50)
+        self._target_size.setRange(5, 20)
         self._target_size.setValue(10)
         self._target_size.setSuffix(" px")
         layout.addWidget(QLabel("Target Size:"), 1, 0)
         layout.addWidget(self._target_size, 1, 1)
 
+        self._target_shape = QComboBox()
+        self._target_shape.addItems(["Spot (soft)", "Square", "Circular"])
+        layout.addWidget(QLabel("Target Shape:"), 2, 0)
+        layout.addWidget(self._target_shape, 2, 1)
+
         self._seed_spin = QSpinBox()
         self._seed_spin.setRange(0, 99999)
         self._seed_spin.setValue(42)
-        layout.addWidget(QLabel("Seed:"), 2, 0)
-        layout.addWidget(self._seed_spin, 2, 1)
+        layout.addWidget(QLabel("Seed:"), 3, 0)
+        layout.addWidget(self._seed_spin, 3, 1)
 
         self._sim_speed = QDoubleSpinBox()
         self._sim_speed.setRange(0.1, 10.0)
         self._sim_speed.setValue(1.0)
         self._sim_speed.setSingleStep(0.1)
-        layout.addWidget(QLabel("Speed:"), 3, 0)
-        layout.addWidget(self._sim_speed, 3, 1)
+        layout.addWidget(QLabel("Speed:"), 4, 0)
+        layout.addWidget(self._sim_speed, 4, 1)
         return w
 
     def _camera_tab(self) -> QWidget:
@@ -178,6 +218,8 @@ class ControlPanel(QFrame):
 
         self._perc_combo = QComboBox()
         self._perc_combo.addItems(["classical", "ai", "hybrid"])
+        self._perc_combo.currentTextChanged.connect(
+            lambda _t: self.config_changed.emit(self.get_config()))
         layout.addWidget(QLabel("Backend:"), 0, 0)
         layout.addWidget(self._perc_combo, 0, 1)
 
@@ -194,6 +236,21 @@ class ControlPanel(QFrame):
         self._show_trail = QCheckBox("Show Trail")
         self._show_trail.setChecked(True)
         layout.addWidget(self._show_trail, 3, 0, 1, 2)
+
+        # Live ablation toggles (manish-review port): no restart needed.
+        self._kalman_check = QCheckBox("Kalman Tracker")
+        self._kalman_check.setChecked(True)
+        self._kalman_check.setToolTip("Uncheck for raw-detection tracking")
+        self._kalman_check.toggled.connect(
+            lambda _c: self.config_changed.emit(self.get_config()))
+        layout.addWidget(self._kalman_check, 4, 0, 1, 2)
+
+        self._ai_brain_check = QCheckBox("AI Brain")
+        self._ai_brain_check.setChecked(True)
+        self._ai_brain_check.setToolTip("Uncheck to bypass mission AI")
+        self._ai_brain_check.toggled.connect(
+            lambda _c: self.config_changed.emit(self.get_config()))
+        layout.addWidget(self._ai_brain_check, 5, 0, 1, 2)
         return w
 
     def _disturbance_tab(self) -> QWidget:
@@ -255,6 +312,18 @@ class ControlPanel(QFrame):
         row += 1
         self._turbulence_check = QCheckBox("Turbulence")
         layout.addWidget(self._turbulence_check, row, 0)
+        self._gauss_check = QCheckBox("Gaussian")
+        self._gauss_check.setChecked(True)
+        self._gauss_check.setToolTip("Additive Gaussian noise")
+        layout.addWidget(self._gauss_check, row, 1)
+        self._sp_check = QCheckBox("Salt&Pepper")
+        self._sp_check.setChecked(True)
+        self._sp_check.setToolTip("Salt & pepper (~10% per PS)")
+        layout.addWidget(self._sp_check, row, 2)
+        self._poisson_check = QCheckBox("Poisson")
+        self._poisson_check.setChecked(True)
+        self._poisson_check.setToolTip("Photon-shot Poisson noise")
+        layout.addWidget(self._poisson_check, row, 3)
 
         # --- Row: Intensity slider ---
         row += 1
@@ -263,6 +332,36 @@ class ControlPanel(QFrame):
         self._dist_intensity.setValue(50)
         layout.addWidget(QLabel("Intensity:"), row, 0)
         layout.addWidget(self._dist_intensity, row, 1, 1, 3)
+
+        # --- PS numeric tuning (user-defined, clamped to PS maxima) ---
+        row += 1
+        self._noise_sigma = QDoubleSpinBox()
+        self._noise_sigma.setRange(0.0, 20.0)
+        self._noise_sigma.setValue(5.0)
+        self._noise_sigma.setSingleStep(0.5)
+        self._noise_sigma.setSuffix(" σ")
+        layout.addWidget(QLabel("Noise σ:"), row, 0)
+        layout.addWidget(self._noise_sigma, row, 1)
+        self._noise_density = QDoubleSpinBox()
+        self._noise_density.setRange(0.0, 0.5)
+        self._noise_density.setValue(0.05)
+        self._noise_density.setSingleStep(0.01)
+        layout.addWidget(QLabel("S&P dens:"), row, 2)
+        layout.addWidget(self._noise_density, row, 3)
+
+        row += 1
+        self._jitter_amp = QDoubleSpinBox()
+        self._jitter_amp.setRange(0.0, 20.0)
+        self._jitter_amp.setValue(5.0)
+        self._jitter_amp.setSingleStep(0.5)
+        self._jitter_amp.setSuffix(" px")
+        layout.addWidget(QLabel("Jitter amp:"), row, 0)
+        layout.addWidget(self._jitter_amp, row, 1)
+        self._platform_type = QComboBox()
+        self._platform_type.addItems(
+            ["linear", "circular", "figure_eight", "spiral", "random"])
+        layout.addWidget(QLabel("Platform:"), row, 2)
+        layout.addWidget(self._platform_type, row, 3)
 
         # Wire signals
         self._dist_apply.clicked.connect(self._on_disturbance_apply)
@@ -476,6 +575,8 @@ class ControlPanel(QFrame):
             "mode": self._mode_combo.currentText().lower(),
             "trajectory": self._traj_combo.currentText(),
             "target_size": self._target_size.value(),
+            "target_shape": _shape_label_to_value(
+                self._target_shape.currentText()),
             "seed": self._seed_spin.value(),
             "sim_dt": 1.0 / (30.0 * self._sim_speed.value()),
             "camera_width": self._cam_w.value(),
@@ -487,10 +588,15 @@ class ControlPanel(QFrame):
             "prediction_horizon_s": self._pred_horizon.value(),
             "perception_backend": self._perc_combo.currentText(),
             "confidence_threshold": self._conf_thresh.value(),
+            "kalman_enabled": self._kalman_check.isChecked(),
+            "ai_brain_enabled": self._ai_brain_check.isChecked(),
             "disturbance_enabled": self._dist_enabled.isChecked(),
             "disturbance_preset": self._dist_preset.currentText(),
             "disturbance_effects": {
                 "noise": self._noise_check.isChecked(),
+                "noise_gaussian": self._gauss_check.isChecked(),
+                "noise_salt_pepper": self._sp_check.isChecked(),
+                "noise_poisson": self._poisson_check.isChecked(),
                 "fog": self._fog_check.isChecked(),
                 "haze": self._haze_check.isChecked(),
                 "rain": self._rain_check.isChecked(),
@@ -505,6 +611,10 @@ class ControlPanel(QFrame):
                 "turbulence": self._turbulence_check.isChecked(),
             },
             "disturbance_intensity": self._dist_intensity.value() / 100.0,
+            "disturbance_noise_sigma": self._noise_sigma.value(),
+            "disturbance_noise_density": self._noise_density.value(),
+            "disturbance_jitter_amp": self._jitter_amp.value(),
+            "disturbance_platform_type": self._platform_type.currentText(),
             "video_path": self._video_path.text(),
             "camera_id": self._live_camera_combo.currentData() or 0,
             "show_ground_truth": self._show_gt.isChecked(),

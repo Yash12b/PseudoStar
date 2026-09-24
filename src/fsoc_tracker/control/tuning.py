@@ -124,7 +124,7 @@ class PIDTuningEvaluator:
 
     def _compute_settling_time(self, errors: list[float], timestamps: list[float]) -> float:
         threshold = 10.0
-        for i, (err, ts) in enumerate(zip(errors, timestamps)):
+        for i, (err, ts) in enumerate(zip(errors, timestamps, strict=True)):
             if err < threshold:
                 all_settled = all(e < threshold for e in errors[i:i + 10])
                 if all_settled:
@@ -188,7 +188,7 @@ class PIDSweepRunner:
         candidates = []
 
         for combo in itertools.product(*values):
-            params = dict(zip(keys, combo))
+            params = dict(zip(keys, combo, strict=True))
             try:
                 candidate = eval_fn(**params)
                 candidates.append(candidate)

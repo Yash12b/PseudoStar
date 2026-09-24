@@ -3,10 +3,14 @@
 ## Worlds (generated, seeded — no presets)
 
 `--world`: `nominal` (single slow beacon), `multi` (3 candidates),
-`distractor` (glint field), `loss` (temporal outages), `noise`,
+`distractor` (glint field), `coded` (primary blinks code 10110010,
+five equal decoys blink the inverse — only the temporal code
+separates them), `moving` (Terminal A itself drifts + yaws while the
+beacon flies: two moving endpoints), `loss` (temporal outages), `noise`,
 `fog`, `jitter`, `fast` (240 px/s lateral crosser for lag/lead
 evaluation). Same world + seed reproduces exactly; `--seeds 42,43,44`
-aggregates mean/std across seeds.
+aggregates mean/std across seeds (Monte Carlo acquisition: the
+`Acquisition (s)` mean/std row is the Tacq distribution).
 
 ## Tuning flags (opt-in experiments, defaults are the production path)
 
@@ -14,6 +18,22 @@ aggregates mean/std across seeds.
   (default: nearest-neighbor). Measured: large RMSE win in glint
   fields, small clean-scene cost; use per scenario, not globally.
 - `--assoc-gate-px N` — Euclidean gate override (default: 80).
+- `--assoc-appearance W` — appearance-term weight in the association
+  score (default: 0 off). Prefers candidates matching the track's
+  running size/brightness signature when several pass the geometric
+  gate. Measured on 30 seeded planted-glint trials: hijacks 24/30
+  (W=0) → 0/30 (W=8); no effect on the 6-lookalike distractor world
+  (geometry gaps dominate there).
+- `--assoc-identity W` + `--identity-code CODE` — coded-identity term
+  weight with the operator-configured binary beacon code (default: 0
+  off / no code). Candidates whose blink history confidently mismatches
+  the code are skipped before ranking, so the tracker coasts through
+  the true beacon's OFF gaps instead of hijacking a decoy. Measured on
+  `coded` (kalman_expert, seeds 42/7/13, 600f): RMSE 12.08→2.16 px,
+  false-lock frames 54.8%→2.5% (72→2 events) at W=40, code 10110010.
+  Retention reads lower (99.5%→51.5%) because a 50%-duty beacon yields
+  photons half the time — the RMSE/false-lock pair is the honest
+  comparison, retention is reported alongside, not hidden.
 - `--lead` / `--lead-time S` — lead-angle compensation: aim ahead
   along estimated velocity (default off, lookahead 0.1 s, capped).
   Measured on `fast`: RMSE 5.56→4.68, loss 30.5%→22.5% at 0.2 s.
@@ -226,6 +246,20 @@ for fm in engine.get_collector().frames:
     if fm.error_px is not None:
         print(f"Frame {fm.frame_index}: error={fm.error_px:.2f}px")
 ```
+
+### Recompute-verify (reports prove themselves)
+
+Every GUI-run performance report stores the full per-frame raw error
+series next to the JSON (`*_raw_errors.csv`, path recorded in the
+report). Recompute every aggregate from raw and compare:
+
+```bash
+python -m fsoc_tracker.cli.run_benchmark verify artifacts/reports/report_<ts>.json
+# VERIFY: PASS — or FAIL with per-metric stored-vs-recomputed diffs
+```
+
+A tampered headline number fails verification; a missing raw file
+refuses it. The GUI logs the verdict automatically at stop time.
 
 ## CI Regression
 

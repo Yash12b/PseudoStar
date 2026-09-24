@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-
 @dataclass
 class CameraPoseContext:
     """Snapshot of camera pose for geometric disturbances."""

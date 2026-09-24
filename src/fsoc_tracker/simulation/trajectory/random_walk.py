@@ -6,8 +6,9 @@ Uses seeded RNG for deterministic behavior.
 
 from __future__ import annotations
 
-import numpy as np
 from typing import Any
+
+import numpy as np
 
 from fsoc_tracker.simulation.trajectory.base import Trajectory
 

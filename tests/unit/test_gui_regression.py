@@ -1,11 +1,10 @@
 """GUI regression test — ensures projection/rendering paths don't crash."""
-import math
 import pytest
 
-from fsoc_tracker.gui.state import ApplicationViewState, TargetView, TerminalView, OpticalLinkView
-from fsoc_tracker.simulation.camera.state import CameraState, CameraIntrinsics
+from fsoc_tracker.gui.state import OpticalLinkView, TargetView, TerminalView
 from fsoc_tracker.simulation.camera.geometry import camera_rotation_matrix
 from fsoc_tracker.simulation.camera.projection import project_to_image
+from fsoc_tracker.simulation.camera.state import CameraState
 
 
 class TestProjectToImageContract:

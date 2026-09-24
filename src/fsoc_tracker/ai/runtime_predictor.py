@@ -180,6 +180,7 @@ class GRUPredictor:
                 return
 
             import torch
+
             from fsoc_tracker.ai.neural import build_temporal_predictor
 
             model = build_temporal_predictor(

@@ -201,9 +201,7 @@ class OpticalLinkEngine:
 
             if self.state._locked_count >= self.state.hysteresis_frames:
                 if self.state.status in (LinkStatus.NO_LINK, LinkStatus.SEARCHING,
-                                          LinkStatus.ALIGNING, LinkStatus.DEGRADED):
-                    self.state.status = LinkStatus.LOCKED
-                elif self.state.status in (LinkStatus.LOST, LinkStatus.REACQUIRING):
+                                          LinkStatus.ALIGNING, LinkStatus.DEGRADED) or self.state.status in (LinkStatus.LOST, LinkStatus.REACQUIRING):
                     self.state.status = LinkStatus.LOCKED
 
         elif err <= degraded_thresh:

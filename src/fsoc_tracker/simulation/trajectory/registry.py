@@ -8,11 +8,11 @@ Adding a new trajectory type requires only:
 
 from __future__ import annotations
 
-from typing import Any, Type
+from typing import Any
 
 from fsoc_tracker.core.exceptions import ConfigurationError
-from fsoc_tracker.simulation.trajectory.base import Trajectory
 from fsoc_tracker.simulation.trajectory.accel_decel import AccelDecelTrajectory
+from fsoc_tracker.simulation.trajectory.base import Trajectory
 from fsoc_tracker.simulation.trajectory.circular import CircularTrajectory
 from fsoc_tracker.simulation.trajectory.figure_eight import FigureEightTrajectory
 from fsoc_tracker.simulation.trajectory.random import RandomTrajectory
@@ -20,8 +20,8 @@ from fsoc_tracker.simulation.trajectory.random_walk import RandomWalkTrajectory
 from fsoc_tracker.simulation.trajectory.sinusoidal import SinusoidalTrajectory
 from fsoc_tracker.simulation.trajectory.spiral import SpiralTrajectory
 from fsoc_tracker.simulation.trajectory.stop_go import StopGoTrajectory
-from fsoc_tracker.simulation.trajectory.sudden_reversal import SuddenReversalTrajectory
 from fsoc_tracker.simulation.trajectory.straight_line import StraightLineTrajectory
+from fsoc_tracker.simulation.trajectory.sudden_reversal import SuddenReversalTrajectory
 from fsoc_tracker.simulation.trajectory.user_controlled import UserControlledTrajectory
 
 
@@ -38,7 +38,7 @@ class TrajectoryRegistry:
     """
 
     def __init__(self) -> None:
-        self._registry: dict[str, Type[Trajectory]] = {}
+        self._registry: dict[str, type[Trajectory]] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -54,7 +54,7 @@ class TrajectoryRegistry:
         self.register("accel_decel", AccelDecelTrajectory)
         self.register("user_controlled", UserControlledTrajectory)
 
-    def register(self, name: str, cls: Type[Trajectory]) -> None:
+    def register(self, name: str, cls: type[Trajectory]) -> None:
         """Register a trajectory class under the given name.
 
         Args:

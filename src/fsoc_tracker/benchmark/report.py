@@ -21,9 +21,16 @@ def generate_performance_report(
     state: Any,
     output_dir: str = ".",
     filename: str = "performance_report.json",
+    raw_errors: list[float] | None = None,
 ) -> str:
     """Generate a comprehensive performance report from the current state.
-    
+
+    ``raw_errors`` (optional): the FULL per-frame error list. When
+    supplied it is stored alongside the report (sibling CSV) and its
+    path recorded in the JSON, so verify_performance_report() can
+    recompute every aggregate from raw data later. The in-JSON
+    error_history keeps only the last 100 points for display.
+
     Returns the path to the generated report.
     """
     errors = state.errors
@@ -138,19 +145,98 @@ def generate_performance_report(
             "fallback_active": ai.fallback_active,
             "search_active": ai.search_active,
         },
+        "handoff": {
+            "ready": bool(getattr(state, "handoff_ready", False)),
+            "stable_s": round(float(getattr(state, "handoff_stable_s", 0.0)), 3),
+        },
         "error_history": {
             "timestamps": [round(t, 3) for t in errors.timestamps[-100:]],
             "errors_euclidean": [round(e, 2) for e in errors.errors_euclidean[-100:]],
             "fps_history": [round(f, 1) for f in errors.fps_history[-100:]],
         },
+        "raw_errors_path": None,
     }
 
     out_path = Path(output_dir) / filename
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if raw_errors is not None:
+        raw_path = out_path.with_name(out_path.stem + "_raw_errors.csv")
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write("frame,error_px\n")
+            for i, e in enumerate(raw_errors):
+                f.write(f"{i},{float(e):.6f}\n")
+        report["raw_errors_path"] = str(raw_path)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, default=str)
 
     return str(out_path)
+
+
+def recompute_error_aggregates(raw_errors: list[float]) -> dict[str, float]:
+    """Recompute tracking aggregates from raw per-frame errors."""
+    import math
+    vals = [float(e) for e in raw_errors]
+    if not vals:
+        return {"avg_error_px": 0.0, "max_error_px": 0.0,
+                "min_error_px": 0.0, "rmse_px": 0.0, "p95_error_px": 0.0}
+    ordered = sorted(vals)
+    return {
+        "avg_error_px": sum(vals) / len(vals),
+        "max_error_px": max(vals),
+        "min_error_px": min(vals),
+        "rmse_px": math.sqrt(sum(e ** 2 for e in vals) / len(vals)),
+        "p95_error_px": ordered[min(int(len(ordered) * 0.95),
+                                    len(ordered) - 1)],
+    }
+
+
+def verify_performance_report(report_path: str,
+                              tolerance: float = 0.011) -> dict[str, Any]:
+    """Recompute a report's aggregates from its raw CSV and compare.
+
+    Returns {"ok": bool, "details": {...}, "report": path}. ``ok`` is
+    True only when every recomputed aggregate matches the stored value
+    within tolerance (covers the JSON round(x, 2) quantization).
+    Missing raw file -> {"ok": False, "reason": ...}.
+    """
+    path = Path(report_path)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    raw_ref = (report.get("raw_errors_path")
+               or str(path.with_name(path.stem + "_raw_errors.csv")))
+    raw_path = Path(raw_ref)
+    if not raw_path.is_absolute():
+        raw_path = path.parent / raw_path.name
+    if not raw_path.exists():
+        return {"ok": False, "report": str(path),
+                "reason": f"raw errors file missing: {raw_path}"}
+    vals: list[float] = []
+    with open(raw_path, encoding="utf-8") as f:
+        header = True
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if header:
+                header = False
+                continue
+            try:
+                vals.append(float(line.split(",")[1]))
+            except (IndexError, ValueError):
+                continue
+    recomputed = recompute_error_aggregates(vals)
+    stored = report.get("tracking", {})
+    details: dict[str, Any] = {}
+    ok = True
+    for key in ("avg_error_px", "max_error_px", "min_error_px",
+                "rmse_px", "p95_error_px"):
+        s = stored.get(key)
+        r = recomputed[key]
+        match = s is not None and abs(float(s) - r) <= tolerance
+        details[key] = {"stored": s, "recomputed": round(r, 4),
+                        "match": bool(match)}
+        ok = ok and bool(match)
+    return {"ok": ok, "report": str(path), "raw": str(raw_path),
+            "frames": len(vals), "details": details}
 
 
 def generate_html_report(result: Any, output_path: str) -> str:

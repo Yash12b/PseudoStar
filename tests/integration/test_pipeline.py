@@ -13,31 +13,25 @@ Tests the full system pipeline across:
 from __future__ import annotations
 
 import math
-import time
 
-import numpy as np
 import pytest
 
-from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.perception.config import PerceptionConfig
-from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.tracking.config import TrackerConfig
-from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
-from fsoc_tracker.control.config import ControllerConfig
-from fsoc_tracker.simulation.engine import SimulationEngine
-from fsoc_tracker.simulation.world import WorldConfig
-from fsoc_tracker.simulation.camera.camera import VirtualCamera
-from fsoc_tracker.simulation.camera.state import CameraState, CameraIntrinsics
-from fsoc_tracker.simulation.sensor.config import SensorConfig
-from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.disturbances.config import get_preset_config
 from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
-from fsoc_tracker.pipeline.pipeline import TrackingPipeline, PipelineFrameResult
-from fsoc_tracker.pipeline.sources import SimulationSource, FrameSource
+from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+from fsoc_tracker.perception.config import PerceptionConfig
 from fsoc_tracker.pipeline.eval import EvalSink
-from fsoc_tracker.pipeline.session import SessionController, RunState
-from fsoc_tracker.core.time import compute_dt
-
+from fsoc_tracker.pipeline.pipeline import PipelineFrameResult, TrackingPipeline
+from fsoc_tracker.pipeline.session import RunState, SessionController
+from fsoc_tracker.pipeline.sources import SimulationSource
+from fsoc_tracker.simulation.camera.camera import VirtualCamera
+from fsoc_tracker.simulation.camera.state import CameraState
+from fsoc_tracker.simulation.engine import SimulationEngine
+from fsoc_tracker.simulation.sensor.config import SensorConfig
+from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+from fsoc_tracker.simulation.world import WorldConfig
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -449,3 +443,28 @@ class TestDeterministicReplay:
             assert abs(r1.timestamp_s - r2.timestamp_s) < 1e-6
             if r1.error_px is not None and r2.error_px is not None:
                 assert abs(r1.error_px - r2.error_px) < 1e-3
+
+    def test_session_centroid_log(self):
+        pipeline, _ = _make_pipeline()
+        session = SessionController(pipeline, auto_save=False)
+        session.start()
+        for _ in range(10):
+            session.step()
+        result = session.stop()
+        assert len(result.centroids) == 10
+        assert len(result.centroids[0]) == 10
+        assert result.centroids[0][0] == 0
+
+    def test_session_centroids_csv(self, tmp_path):
+        pipeline, _ = _make_pipeline()
+        session = SessionController(pipeline, output_dir=str(tmp_path))
+        session.start()
+        for _ in range(5):
+            session.step()
+        result = session.stop()
+        csv_path = __import__("os").path.join(
+            result.artifacts_dir, "centroids.csv")
+        with open(csv_path) as f:
+            lines = f.read().strip().split("\n")
+        assert lines[0].startswith("frame_index,timestamp_s,detected,")
+        assert len(lines) == 6

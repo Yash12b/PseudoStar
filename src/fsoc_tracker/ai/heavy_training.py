@@ -18,7 +18,6 @@ from typing import Any
 
 import numpy as np
 
-
 ARTIFACTS_DIR = Path("artifacts/models/heavy-training-v1")
 DATASET_DIR = ARTIFACTS_DIR / "dataset"
 
@@ -223,10 +222,10 @@ def train_detection_cnn(
     val_split: float = 0.15,
 ) -> dict[str, Any]:
     """Train the beacon detection CNN using the existing BeaconCNN architecture."""
-    from fsoc_tracker.ai.model import BeaconCNN
-
     # BeaconCNN expects 128x128 input - resize images
     from scipy.ndimage import zoom
+
+    from fsoc_tracker.ai.model import BeaconCNN
     target_h, target_w = 128, 128
     zoom_y = target_h / images.shape[1]
     zoom_x = target_w / images.shape[2]
@@ -563,7 +562,7 @@ def train_mission_models(
     targets: np.ndarray,
 ) -> dict[str, Any]:
     """Train the mission brain models (motion, situation, policy classifiers)."""
-    from fsoc_tracker.ai.learned import LearnedMotionModel, LearnedFeatureClassifier
+    from fsoc_tracker.ai.learned import LearnedFeatureClassifier, LearnedMotionModel
 
     results = {}
 

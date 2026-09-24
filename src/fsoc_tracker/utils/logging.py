@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-
 _LOG_FORMAT = (
     "%(asctime)s | %(levelname)-8s | %(name)-28s | %(message)s"
 )

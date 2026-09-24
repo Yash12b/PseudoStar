@@ -29,15 +29,26 @@ def compute_centroid(
     if mask is None or not np.any(mask):
         return (0.0, 0.0)
 
-    img = image.astype(np.float64)
-    m = mask.astype(bool)
+    # Crop to the mask bbox (+1 px margin): identical arithmetic on the
+    # same pixel set, without full-frame copies per candidate.
+    m_full = mask.astype(bool)
+    ys0, xs0 = np.where(m_full)
+    H, W = image.shape[:2]
+    cx1 = max(0, int(np.min(xs0)) - 1)
+    cy1 = max(0, int(np.min(ys0)) - 1)
+    cx2 = min(W, int(np.max(xs0)) + 2)
+    cy2 = min(H, int(np.max(ys0)) + 2)
+
+    img = image.astype(np.float64)[cy1:cy2, cx1:cx2]
+    m = m_full[cy1:cy2, cx1:cx2]
 
     if method == CentroidMethod.INTENSITY_WEIGHTED:
         result = _weighted_centroid(img, m)
         if result is not None:
-            return result
+            return (result[0] + cx1, result[1] + cy1)
 
-    return _geometric_centroid(m)
+    gx, gy = _geometric_centroid(m)
+    return (gx + cx1, gy + cy1)
 
 
 def _weighted_centroid(image: np.ndarray, mask: np.ndarray) -> tuple[float, float] | None:

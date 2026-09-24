@@ -112,14 +112,14 @@ def _run_scenario(
     target_size: float = 10.0,
 ) -> ScenarioMetrics:
     """Run a single scenario and collect metrics."""
-    from fsoc_tracker.simulation.engine import SimulationEngine
-    from fsoc_tracker.simulation.world import WorldConfig
-    from fsoc_tracker.simulation.camera.camera import VirtualCamera
-    from fsoc_tracker.simulation.camera.state import CameraState
-    from fsoc_tracker.simulation.sensor.config import SensorConfig
-    from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
     from fsoc_tracker.disturbances.config import get_preset_config
     from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
+    from fsoc_tracker.simulation.camera.camera import VirtualCamera
+    from fsoc_tracker.simulation.camera.state import CameraState
+    from fsoc_tracker.simulation.engine import SimulationEngine
+    from fsoc_tracker.simulation.sensor.config import SensorConfig
+    from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+    from fsoc_tracker.simulation.world import WorldConfig
 
     traj_params = {"x0": 1000.0, "y0": 1000.0, "z0": 100.0, "vx": 0.3, "vy": 0.2}
     if trajectory_type == "circular":
@@ -191,11 +191,11 @@ def run_benchmark(
     output_dir: str = "runs/ai-benchmark",
 ) -> BenchmarkResult:
     """Run full benchmark comparing classical vs AI-enhanced pipeline."""
-    from fsoc_tracker.ai.mission import AIMissionBrain
     from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
     from fsoc_tracker.ai.failure_predictor import FailurePredictor
-    from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
+    from fsoc_tracker.ai.mission import AIMissionBrain
     from fsoc_tracker.control.adaptive import AdaptiveController
+    from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
     from fsoc_tracker.tracking.search import SearchController
 
     scenarios = [

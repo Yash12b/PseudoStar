@@ -91,7 +91,7 @@ def _prepare_batch(
     batch_imgs = []
     batch_hm = []
 
-    for img, label in zip(images, labels):
+    for img, label in zip(images, labels, strict=True):
         # Normalize image to [0, 1]
         normalized = img.astype(np.float32) / 255.0
 
@@ -242,7 +242,7 @@ def train(
         # Validation
         val_outputs = []
         val_hm_targets = []
-        for img, lbl in zip(val_images[:100], val_labels[:100]):  # Subsample for speed
+        for img, lbl in zip(val_images[:100], val_labels[:100], strict=True):  # Subsample for speed
             norm = img.astype(np.float32) / 255.0
             if norm.shape != (cfg.input_height, cfg.input_width):
                 norm = _resize_simple(norm, cfg.input_height, cfg.input_width)
@@ -256,7 +256,7 @@ def train(
             val_hm_targets.append(hm_target)
 
         val_loss = np.mean([
-            _compute_loss(p, t) for p, t in zip(val_outputs, val_hm_targets)
+            _compute_loss(p, t) for p, t in zip(val_outputs, val_hm_targets, strict=True)
         ])
 
         # Compute precision

@@ -22,6 +22,18 @@ from typing import Any
 
 import numpy as np
 
+from fsoc_tracker.ai.mission import (
+    AIMissionBrain,
+    MissionAction,
+    MissionObservation,
+    ObservationFeatures,
+    Situation,
+)
+from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
+from fsoc_tracker.core.interfaces import FrameSource
+from fsoc_tracker.core.models import Frame
+from fsoc_tracker.disturbances.config import DisturbanceConfig
+from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
 from fsoc_tracker.gui.state import (
     ApplicationViewState,
     SystemMode,
@@ -29,27 +41,67 @@ from fsoc_tracker.gui.state import (
     TargetView,
 )
 from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.ai.mission import AIMissionBrain, MissionAction, MissionObservation, ObservationFeatures, Situation
-from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
-from fsoc_tracker.core.models import Frame
-from fsoc_tracker.core.interfaces import FrameSource
-from fsoc_tracker.disturbances.config import DisturbanceConfig
-from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
+from fsoc_tracker.perception.config import PerceptionConfig
+from fsoc_tracker.pipeline.eval import EvalSink
+from fsoc_tracker.pipeline.pipeline import TrackingPipeline
+from fsoc_tracker.pipeline.sources import (
+    EquirectangularFrameSource,
+    LiveSource,
+    LiveViewportSource,
+    VideoSource,
+    VirtualSimulationSource,
+)
 from fsoc_tracker.simulation.camera.camera import VirtualCamera
 from fsoc_tracker.simulation.camera.state import CameraState
 from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.sensor.config import SensorConfig
 from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
 from fsoc_tracker.simulation.world import WorldConfig
-from fsoc_tracker.pipeline.sources import LiveSource, LiveViewportSource, VideoSource, VirtualSimulationSource, EquirectangularFrameSource
-from fsoc_tracker.pipeline.eval import EvalSink
-from fsoc_tracker.pipeline.pipeline import TrackingPipeline
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 try:
     from PySide6.QtCore import QThread, Signal
 except ImportError:
     from PyQt5.QtCore import QThread, Signal  # type: ignore
+
+
+# Video-decoder recovery policy (VIDEO mode only).
+#
+# OpenCV's ffmpeg backend goes sticky-EOF after a damaged packet:
+# read() returns None forever even though later frames are perfectly
+# decodable. Without recovery, one corrupt packet in a 5-minute file
+# stops the whole run ("Video ended after N frames" far short of the
+# real duration). So on sustained misses the worker re-opens the file
+# and seeks past the damage, skipping further ahead with each attempt.
+# The run stops only on confirmed end-of-file or exhausted recovery.
+_VIDEO_RECOVER_FIRST_AT = 5      # misses before the first recovery attempt
+_VIDEO_RECOVER_EVERY = 10        # misses between further attempts
+_VIDEO_RECOVER_MAX_ATTEMPTS = 8  # give up recovery after this many failures
+_VIDEO_RECOVER_SKIP_FRAMES = 30  # seek this many frames further per attempt
+_VIDEO_HARD_STOP_STREAK = 300    # backstop: never spin forever (~10 s)
+
+
+# Handoff readiness: coarse alignment counts as stable enough for a
+# future fine-pointing stage when lock + low uncertainty/residual hold
+# for this many consecutive measured frames (all GT-free observables).
+_HANDOFF_STREAK_FRAMES = 15
+_HANDOFF_UNCERTAINTY_SUM_PX = 20.0
+_HANDOFF_RESIDUAL_PX = 5.0
+
+
+def _sensor_shape_kwargs(shape: str) -> dict:
+    """Map a GUI target-shape value to SensorConfig overrides.
+
+    "spot" keeps the legacy soft-Gaussian rendering (config defaults —
+    existing behavior unchanged). "square"/"circular" render hard-edged
+    spots of the selected geometry.
+    """
+    shape = (shape or "spot").lower()
+    if shape == "square":
+        return {"beacon_shape": "square", "beacon_soft_edges": False}
+    if shape == "circular":
+        return {"beacon_shape": "circular", "beacon_soft_edges": False}
+    return {}
 
 
 class WorkerSignals:
@@ -83,8 +135,17 @@ class ProcessingWorker(QThread):
         self._paused = False
         self._step = False
         self._mode = SystemMode.SIMULATION
+        # Consecutive unreadable-video-frames tolerance: a single bad
+        # read (common on long/real-world files) must not kill the run;
+        # only a sustained failure means EOF/device loss.
+        self._video_miss_streak = 0
+        self._video_miss_limit = 30
+        self._video_recover_attempts = 0
         self._state = ApplicationViewState()
         self._config: dict[str, Any] = {}
+        # Runtime ablation toggles (live from GUI; defaults = full system).
+        self._ai_enabled = True
+        self._use_kalman_tracker = True
 
         # Unified frame source — ALL modes go through this
         self._source: FrameSource | None = None
@@ -114,11 +175,17 @@ class ProcessingWorker(QThread):
         self._eval_sink: EvalSink | None = None
         self._mission_policy = AIMissionBrain()
         self._last_mission_decision = None
-        self._target_trail: list[tuple[float, float]] = []
-        self._max_trail = 200
+        # Trail history (bounded): per-target world positions for the 3D
+        # target trails, plus camera boresight aim points for the search
+        # sweep trail. Replaces the unused _target_trail/_max_trail stubs.
+        from collections import deque as _deque
+        self._target_trails: dict[int, _deque] = {}
+        self._trail_len = 120
+        self._camera_trail: _deque = _deque(maxlen=120)
+        self._trail_depth = 550.0
 
         # Search controller
-        from fsoc_tracker.tracking.search import SearchController, SearchConfig
+        from fsoc_tracker.tracking.search import SearchConfig, SearchController
         self._search_controller = SearchController(SearchConfig(
             image_width=640, image_height=480,
         ))
@@ -159,6 +226,10 @@ class ProcessingWorker(QThread):
         self._reacquisition_time_s: float | None = None
         self._last_loss_s: float | None = None
         self._was_tracking: bool = False
+        # Handoff readiness (GT-free coarse-stability signal)
+        self._handoff_streak: int = 0
+        self._handoff_streak_start_s: float = 0.0
+        self._handoff_ready: bool = False
 
     def configure(self, config: dict[str, Any]) -> None:
         self._config = config
@@ -173,6 +244,10 @@ class ProcessingWorker(QThread):
         self._state.source_info = str(config.get("video_path", "")) if self._mode == SystemMode.VIDEO else self._mode.value
         self._sim_dt = config.get("sim_dt", 1.0 / 30.0)
         self._active_world = None
+        self._ai_enabled = bool(config.get("ai_brain_enabled", True))
+        self._use_kalman_tracker = bool(config.get("kalman_enabled", True))
+        if self._pipeline is not None:
+            self._pipeline.set_tracker_enabled(self._use_kalman_tracker)
         try:
             self._mission_policy.prediction_horizon_s = float(
                 config.get("prediction_horizon_s", 0.1))
@@ -195,7 +270,9 @@ class ProcessingWorker(QThread):
         return self._comm_engine
 
     def inject_beacon(self, x: float, y: float, z: float, trajectory_type: str = "random",
-                      trajectory_params: dict | None = None, seed: int = 42) -> int:
+                      trajectory_params: dict | None = None, seed: int = 42,
+                      shape: str = "square", size_px: float | None = None,
+                      brightness: float | None = None) -> int:
         """Inject a beacon target into the simulation engine.
 
         Returns the new target id, or -1 when no engine is available.
@@ -241,6 +318,12 @@ class ProcessingWorker(QThread):
             params.setdefault("seed", seed)
         target = self._sim_engine.add_target(
             trajectory_type=trajectory_type, trajectory_params=params)
+        if shape and hasattr(target, "shape"):
+            target.shape = str(shape)
+        if size_px is not None and hasattr(target, "size_px"):
+            target.size_px = float(size_px)
+        if brightness is not None and hasattr(target, "brightness"):
+            target.brightness = float(brightness)
         self.log.emit("INFO", f"Injected beacon {target.target_id} at ({x:.1f}, {y:.1f}, {z:.1f}) type={trajectory_type}")
         return target.target_id
 
@@ -276,10 +359,26 @@ class ProcessingWorker(QThread):
             magnitude_m * math.sin(angle), target_id,
         )
 
+    def _rebase_platform(self) -> None:
+        """Re-baseline strapdown carry after manual placement.
+
+        Manual actions teleport the platform AND the camera together;
+        without re-baselining, the next frame would apply the teleport
+        as a motion delta a second time.
+        """
+        try:
+            sync = getattr(self._source, "sync_platform_baseline", None)
+            if callable(sync):
+                sync()
+        except Exception:
+            pass
+
     def set_terminal_pose(self, x: float, y: float, z: float) -> bool:
         """Place Terminal A (move the virtual camera platform).
 
         Wired to the 3D world-view "Place Terminal A Here" action.
+        Moves the engine platform and the camera together (they are
+        bolted to each other), then re-baselines strapdown carry.
         Returns True if applied.
         """
         if self._camera is None:
@@ -287,10 +386,45 @@ class ProcessingWorker(QThread):
         self._camera.state.position_x = float(x)
         self._camera.state.position_y = float(y)
         self._camera.state.position_z = float(z)
+        try:
+            if self._sim_engine is not None:
+                self._sim_engine.set_platform_pose(
+                    float(x), float(y), float(z),
+                    self._state.terminal_a.yaw_deg,
+                    self._state.terminal_a.pitch_deg)
+        except Exception:
+            pass
+        self._rebase_platform()
         self._state.terminal_a.world_x = float(x)
         self._state.terminal_a.world_y = float(y)
         self._state.terminal_a.world_z = float(z)
         self.log.emit("INFO", f"Terminal A placed at ({x:.0f}, {y:.0f}, {z:.0f})")
+        return True
+
+    def set_terminal_pose_full(
+        self, x: float, y: float, z: float,
+        yaw_deg: float | None = None, pitch_deg: float | None = None,
+    ) -> bool:
+        """Place Terminal A with orientation (position + yaw/pitch).
+
+        Extends set_terminal_pose (which stays for the 3D-view action).
+        Orientation applies to the engine platform and the view state.
+        """
+        if not self.set_terminal_pose(x, y, z):
+            return False
+        if yaw_deg is not None:
+            self._state.terminal_a.yaw_deg = float(yaw_deg)
+        if pitch_deg is not None:
+            self._state.terminal_a.pitch_deg = float(pitch_deg)
+        try:
+            if self._sim_engine is not None:
+                self._sim_engine.set_platform_pose(
+                    float(x), float(y), float(z),
+                    self._state.terminal_a.yaw_deg,
+                    self._state.terminal_a.pitch_deg)
+        except Exception:
+            pass
+        self._rebase_platform()
         return True
 
     def send_message_to_beacon(self, payload: str) -> None:
@@ -316,7 +450,10 @@ class ProcessingWorker(QThread):
         self._prev_ts = None
         self._wall_start = time.perf_counter()
         self._frames_processed = 0
-        self._target_trail = []
+        self._video_miss_streak = 0
+        self._video_recover_attempts = 0
+        self._target_trails = {}
+        self._camera_trail.clear()
         self._state.system_state = SystemState.RUNNING
         self._state.run_state = "PLAYING"
 
@@ -327,6 +464,8 @@ class ProcessingWorker(QThread):
         self._reacquisition_time_s = None
         self._last_loss_s = None
         self._was_tracking = False
+        self._handoff_streak = 0
+        self._handoff_ready = False
         self._det_result_prev = None
         self._search_start_time_s = None
         self._last_search_strategy = None
@@ -351,17 +490,37 @@ class ProcessingWorker(QThread):
         if self._frames_processed > 0:
             try:
                 import json
-                from fsoc_tracker.benchmark.report import generate_performance_report, generate_text_summary
+
+                from fsoc_tracker.benchmark.report import (
+                    generate_performance_report,
+                    generate_text_summary,
+                    verify_performance_report,
+                )
+                raw_errors = None
+                try:
+                    if self._pipeline is not None:
+                        raw_errors = list(self._pipeline.state.errors)
+                except Exception:
+                    raw_errors = None
                 report_path = generate_performance_report(
                     self._state, output_dir="artifacts/reports",
                     filename=f"report_{int(time.time())}.json",
+                    raw_errors=raw_errors,
                 )
-                report = json.loads(open(report_path).read())
+                with open(report_path, encoding="utf-8") as f:
+                    report = json.loads(f.read())
                 summary = generate_text_summary(report)
                 summary_path = report_path.replace(".json", ".txt")
                 with open(summary_path, "w") as f:
                     f.write(summary)
                 self.log.emit("INFO", f"Performance report saved: {report_path}")
+                if raw_errors:
+                    verdict = verify_performance_report(report_path)
+                    self.log.emit(
+                        "INFO" if verdict["ok"] else "ERROR",
+                        f"Report recompute-verify: {'PASS' if verdict['ok'] else 'FAIL'} "
+                        f"({verdict.get('frames', 0)} raw frames checked)",
+                    )
             except Exception as e:
                 self.log.emit("ERROR", f"Failed to generate report: {e}")
 
@@ -412,7 +571,8 @@ class ProcessingWorker(QThread):
             effects = config.get("disturbance_effects", {})
             if effects:
                 intensity = config.get("disturbance_intensity", 0.5)
-                self._apply_effect_overrides(dist_cfg, effects, intensity)
+                self._apply_effect_overrides(dist_cfg, effects, intensity,
+                                             tuning=config)
             self._disturbance = DisturbancePipeline(dist_cfg)
             if self._source is not None and hasattr(self._source, "_disturbance"):
                 self._source._disturbance = self._disturbance
@@ -420,6 +580,18 @@ class ProcessingWorker(QThread):
                           f"preset={config.get('disturbance_preset')}")
         except Exception as e:
             self.log.emit("ERROR", f"Failed to update disturbance: {e}")
+
+    def update_perception(self, config: dict[str, Any]) -> None:
+        """Hot-reload perception confidence threshold from GUI."""
+        if self._detector is None:
+            return
+        gui_conf = config.get("confidence_threshold")
+        if gui_conf is not None:
+            try:
+                self._detector._config = self._detector._config.model_copy(
+                    update={"min_confidence": float(gui_conf)})
+            except (ValueError, TypeError):
+                pass
 
     def pause(self) -> None:
         self._paused = True
@@ -441,12 +613,36 @@ class ProcessingWorker(QThread):
             self._paused = True
             self._state.system_state = SystemState.PAUSED
 
+    def _build_detector(self, cfg: dict, perc_cfg: PerceptionConfig):
+        """Build the perception backend selected in the GUI.
+
+        Delegates to perception.backends (trained weights or classical
+        fallback, never silent random weights).
+        """
+        from fsoc_tracker.perception.backends import build_backend
+        backend = str(cfg.get("perception_backend", "classical")).lower()
+        det, _, _ = build_backend(backend, perc_cfg, log=self)
+        return det
+
     def _init_pipeline(self) -> None:
         cfg = self._config
         # Fresh components AND fresh loop state on every (re)init.
         self._pipeline = None
         try:
-            self._detector = ClassicalBeaconDetector()
+            # Build perception config: video/live get relaxed thresholds
+            # tuned for real-world contrast; simulation keeps stock defaults.
+            perc_cfg = PerceptionConfig()
+            if self._mode in (SystemMode.VIDEO, SystemMode.LIVE):
+                perc_cfg = PerceptionConfig.for_video()
+            # Apply GUI confidence threshold override
+            gui_conf = cfg.get("confidence_threshold")
+            if gui_conf is not None:
+                try:
+                    perc_cfg = perc_cfg.model_copy(
+                        update={"min_confidence": float(gui_conf)})
+                except (ValueError, TypeError):
+                    pass
+            self._detector = self._build_detector(cfg, perc_cfg)
             self._tracker = KalmanTracker()
             self._controller = CoarsePointingController()
 
@@ -592,6 +788,7 @@ class ProcessingWorker(QThread):
                 width=cfg.get("camera_width", 640),
                 height=cfg.get("camera_height", 480),
                 beacon_default_size_px=cfg.get("target_size", 10.0),
+                **_sensor_shape_kwargs(str(cfg.get("target_shape", "spot"))),
             )
             self._sensor = VirtualSensorRenderer(sc)
 
@@ -603,7 +800,8 @@ class ProcessingWorker(QThread):
             effects = cfg.get("disturbance_effects", {})
             if effects:
                 intensity = cfg.get("disturbance_intensity", 0.5)
-                self._apply_effect_overrides(dist_cfg, effects, intensity)
+                self._apply_effect_overrides(dist_cfg, effects, intensity,
+                                             tuning=cfg)
             self._disturbance = DisturbancePipeline(dist_cfg)
 
             # Create VirtualSimulationSource with an EvalSink side channel.
@@ -657,7 +855,7 @@ class ProcessingWorker(QThread):
         self._state.camera.hfov_deg = cfg.get("hfov", 4.0)
         self._state.camera.vfov_deg = cfg.get("vfov", 3.0)
 
-        from fsoc_tracker.tracking.search import SearchController, SearchConfig
+        from fsoc_tracker.tracking.search import SearchConfig, SearchController
         self._search_controller = SearchController(SearchConfig(
             image_width=cfg.get("camera_width", 640),
             image_height=cfg.get("camera_height", 480),
@@ -666,24 +864,51 @@ class ProcessingWorker(QThread):
 
     def _apply_effect_overrides(
         self,
-        cfg: "DisturbanceConfig",
+        cfg: DisturbanceConfig,
         effects: dict[str, bool],
         intensity: float,
+        tuning: dict | None = None,
     ) -> None:
-        """Apply individual effect toggles and intensity scaling."""
+        """Apply individual effect toggles and intensity scaling.
+
+        The optional tuning dict carries PS numeric controls from the GUI
+        (noise sigma/density, jitter amplitude, platform type). Values are
+        clamped to the PS maxima (sigma/jitter/platform amplitude ≤ 20).
+        Absent keys fall back to the legacy intensity-scaled defaults.
+        """
 
         def scale(val: float, factor: float) -> float:
             return val * factor
 
+        def clamp(v: float, lo: float, hi: float) -> float:
+            try:
+                return max(lo, min(hi, float(v)))
+            except (TypeError, ValueError):
+                return lo
+
         f = intensity  # 0..1
+        tuning = tuning or {}
 
         cfg.noise.enabled = effects.get("noise", False)
         if cfg.noise.enabled:
-            # Seed sane magnitudes: enabling on a clear base must do
-            # something (scaling 0.0 would be a silent no-op).
-            cfg.noise.gaussian_sigma = scale(cfg.noise.gaussian_sigma or 5.0, f)
-            cfg.noise.salt_pepper_density = scale(
-                cfg.noise.salt_pepper_density or 0.05, f)
+            use_gauss = effects.get("noise_gaussian", True)
+            use_sp = effects.get("noise_salt_pepper", True)
+            use_pois = effects.get("noise_poisson", True)
+            if "disturbance_noise_sigma" in tuning:
+                # Explicit per-type user selection (PS: one or more).
+                cfg.noise.gaussian_sigma = (
+                    clamp(tuning["disturbance_noise_sigma"], 0.0, 20.0)
+                    if use_gauss else 0.0)
+                cfg.noise.salt_pepper_density = (
+                    clamp(tuning.get("disturbance_noise_density", 0.05), 0.0, 1.0)
+                    if use_sp else 0.0)
+                cfg.noise.poisson_enabled = bool(use_pois)
+            else:
+                # Legacy: enabling on a clear base must do something
+                # (scaling 0.0 would be a silent no-op).
+                cfg.noise.gaussian_sigma = scale(cfg.noise.gaussian_sigma or 5.0, f)
+                cfg.noise.salt_pepper_density = scale(
+                    cfg.noise.salt_pepper_density or 0.05, f)
 
         cfg.atmosphere.enabled = any(effects.get(k, False) for k in ("fog", "haze", "rain", "low_light"))
         if effects.get("fog", False):
@@ -697,14 +922,26 @@ class ProcessingWorker(QThread):
 
         cfg.jitter.enabled = effects.get("jitter", False)
         if cfg.jitter.enabled:
-            cfg.jitter.amplitude_px = scale(cfg.jitter.amplitude_px or 5.0, f)
+            if "disturbance_jitter_amp" in tuning:
+                cfg.jitter.amplitude_px = clamp(
+                    tuning["disturbance_jitter_amp"], 0.0, 20.0)
+            else:
+                cfg.jitter.amplitude_px = min(
+                    20.0, scale(cfg.jitter.amplitude_px or 5.0, f))
 
         cfg.platform_motion.enabled = effects.get("platform_motion", False)
         if cfg.platform_motion.enabled:
-            cfg.platform_motion.amplitude_x_px = scale(
-                cfg.platform_motion.amplitude_x_px or 5.0, f)
-            cfg.platform_motion.amplitude_y_px = scale(
-                cfg.platform_motion.amplitude_y_px or 5.0, f)
+            from fsoc_tracker.disturbances.config import PlatformMotionType
+            try:
+                cfg.platform_motion.type = PlatformMotionType(
+                    str(tuning.get("disturbance_platform_type",
+                                   cfg.platform_motion.type.value)).lower())
+            except ValueError:
+                cfg.platform_motion.type = PlatformMotionType.LINEAR
+            cfg.platform_motion.amplitude_x_px = min(
+                20.0, scale(cfg.platform_motion.amplitude_x_px or 5.0, f))
+            cfg.platform_motion.amplitude_y_px = min(
+                20.0, scale(cfg.platform_motion.amplitude_y_px or 5.0, f))
 
         cfg.turbulence.enabled = effects.get("turbulence", False)
         if cfg.turbulence.enabled:
@@ -770,7 +1007,61 @@ class ProcessingWorker(QThread):
                 eval_sink=self._eval_sink,
             )
             self._pipeline.set_source(self._source)
+            self._pipeline.set_tracker_enabled(self._use_kalman_tracker)
         return self._pipeline
+
+    def apply_runtime_toggles(self, config: dict[str, Any]) -> None:
+        """Apply live ablation toggles (Kalman tracker, AI brain) and
+        perception backend switches.
+
+        Safe mid-run: no stateful component is rebuilt except the
+        stateless detector. Disabling Kalman resets it on re-enable
+        for a clean handoff.
+        """
+        self._ai_enabled = bool(config.get("ai_brain_enabled", True))
+        use_kalman = bool(config.get("kalman_enabled", True))
+        if use_kalman != self._use_kalman_tracker and use_kalman:
+            self._use_kalman_tracker = True
+            if self._pipeline is not None:
+                self._pipeline.set_tracker_enabled(True)
+            try:
+                self._tracker.reset(self._sim_time)
+            except Exception:
+                pass
+            self.log.emit("INFO", "Kalman tracker re-enabled (reset)")
+        else:
+            self._use_kalman_tracker = use_kalman
+            if self._pipeline is not None:
+                self._pipeline.set_tracker_enabled(use_kalman)
+            if not use_kalman:
+                self.log.emit("INFO", "Kalman tracker bypassed: raw detections")
+        if not self._ai_enabled:
+            try:
+                self._controller.set_lead_enabled(False)
+            except Exception:
+                pass
+        # Live backend switch (stateless detector: safe mid-run).
+        backend = str(config.get("perception_backend", "classical")).lower()
+        current = str(getattr(self._detector, "name", "classical")).lower()
+        current_backend = (
+            "ai" if current.startswith("ai_")
+            else "hybrid" if current.startswith("hybrid")
+            else "classical")
+        if backend != current_backend:
+            from fsoc_tracker.perception.config import PerceptionConfig as _PC
+            base = getattr(self._detector, "_config", None)
+            try:
+                perc_cfg = base.model_copy() if base is not None else _PC()
+            except Exception:
+                perc_cfg = _PC()
+            self._detector = self._build_detector(
+                {"perception_backend": backend}, perc_cfg)
+            if self._pipeline is not None:
+                try:
+                    self._pipeline.set_perception(self._detector)
+                except Exception:
+                    pass
+            self.log.emit("INFO", f"Perception backend -> {backend}")
 
     def _release_resources(self) -> None:
         if self._source is not None:
@@ -796,12 +1087,131 @@ class ProcessingWorker(QThread):
             frame = self._source.read()
             if frame is None:
                 if self._mode == SystemMode.VIDEO:
-                    self.stop_run()
+                    self._handle_video_miss()
                 return
+            self._video_miss_streak = 0
+            self._video_recover_attempts = 0
             self._run_frame(frame)
         except Exception as e:
             self.error.emit(str(e))
             self.log.emit("ERROR", f"Frame read failed: {e}")
+
+    def _video_source_total(self) -> int:
+        """Container-reported frame total, 0 when unknown/unreliable.
+
+        Named to avoid the pre-existing ``_video_total_frames`` int
+        attribute set at init (GUI display metadata).
+        """
+        src = self._source
+        if hasattr(src, "_source"):
+            src = src._source  # unwrap equirectangular viewport wrapper
+        try:
+            total = src.frame_count
+            total = int(total()) if callable(total) else int(total)
+        except Exception:
+            return 0
+        return max(0, total or 0)
+
+    def _video_position_str(self) -> str:
+        """Best-effort '(decoder pos X / total Y)' diagnostic suffix."""
+        src = self._source
+        if hasattr(src, "_source"):
+            src = src._source
+        pos = None
+        try:
+            getter = getattr(src, "position_frames", None)
+            pos = int(getter()) if callable(getter) else (
+                int(getter) if getter is not None else None)
+        except Exception:
+            pos = None
+        total = self._video_source_total()
+        if pos is None and total <= 0:
+            return ""
+        return f" (decoder pos {pos if pos is not None else '?'} / total {total if total > 0 else '?'})"
+
+    def _handle_video_miss(self) -> None:
+        """Handle one unreadable video frame.
+
+        Brief gaps are tolerated silently. Sustained misses trigger
+        decoder recovery (re-open + seek past the damage) when the
+        source supports it. The run stops only on confirmed
+        end-of-file, exhausted recovery, or the hard-stop backstop —
+        never on a single corrupt packet mid-file.
+        """
+        self._video_miss_streak += 1
+        streak = self._video_miss_streak
+        if streak == 1:
+            self.log.emit("WARNING", "Video frame unreadable; tolerating brief gaps")
+        # _run_frame leaves _frame_index one past the last processed frame
+        # (fi, then +1), so it doubles as the next-wanted resume point.
+        resume_at = max(self._frame_index, 0)
+        total = self._video_source_total()
+        if total > 0 and resume_at >= total:
+            self.log.emit(
+                "INFO",
+                f"Video ended after {self._frames_processed} frames ({total} total)",
+            )
+            self.stop_run()
+            return
+        recover = getattr(self._source, "reopen_and_seek", None)
+        if callable(recover):
+            if (streak >= _VIDEO_RECOVER_FIRST_AT
+                    and (streak - _VIDEO_RECOVER_FIRST_AT) % _VIDEO_RECOVER_EVERY == 0
+                    and self._video_recover_attempts < _VIDEO_RECOVER_MAX_ATTEMPTS):
+                target = resume_at + self._video_recover_attempts * _VIDEO_RECOVER_SKIP_FRAMES
+                if total > 0 and target >= total:
+                    self.log.emit(
+                        "INFO",
+                        f"Video ended after {self._frames_processed} frames ({total} total)",
+                    )
+                    self.stop_run()
+                    return
+                frame = None
+                try:
+                    if bool(recover(int(target))):
+                        frame = self._source.read()
+                except Exception as e:
+                    self.log.emit("WARNING", f"Video recovery attempt failed: {e}")
+                if frame is not None:
+                    skipped = int(target) - int(resume_at)
+                    self._video_miss_streak = 0
+                    self._video_recover_attempts = 0
+                    if skipped > 0:
+                        self.log.emit(
+                            "WARNING",
+                            f"Video decoder recovered at frame {target} "
+                            f"(skipped {skipped} unreadable frames)",
+                        )
+                    else:
+                        self.log.emit("INFO", f"Video decoder recovered at frame {target}")
+                    self._run_frame(frame)
+                    return
+                self._video_recover_attempts += 1
+                self.log.emit(
+                    "WARNING",
+                    f"Video decoder stall at frame {resume_at}; "
+                    f"recovery attempt {self._video_recover_attempts} failed",
+                )
+                if self._video_recover_attempts >= _VIDEO_RECOVER_MAX_ATTEMPTS:
+                    pos = self._video_position_str()
+                    self.log.emit(
+                        "ERROR",
+                        f"Video decoder stalled at frame {resume_at}{pos}; giving up — "
+                        "file may be truncated or damaged past this point",
+                    )
+                    self.stop_run()
+                    return
+        elif streak > self._video_miss_limit:
+            self.log.emit("INFO", f"Video ended after {self._frames_processed} frames")
+            self.stop_run()
+            return
+        if streak > _VIDEO_HARD_STOP_STREAK:
+            pos = self._video_position_str()
+            self.log.emit(
+                "ERROR",
+                f"Video stalled for {streak} frames at {resume_at}{pos}; stopping",
+            )
+            self.stop_run()
 
     def _handle_world_change(self) -> None:
         """Load a pending generic world config live (simulation only)."""
@@ -820,7 +1230,8 @@ class ProcessingWorker(QThread):
             self._sim_time = 0.0
             self._frame_index = 0
             self._frames_processed = 0
-            self._target_trail = []
+            self._target_trails = {}
+            self._camera_trail.clear()
             self._tracker.reset(0.0)
             self._search_active = False
             self._failure_window.clear()
@@ -1045,6 +1456,30 @@ class ProcessingWorker(QThread):
             processing_fps=s.performance.pipeline_fps,
             candidate_count=det_result.num_candidates,
         )
+        if self._ai_enabled:
+            self._run_brain_step(mission_features, processing_ms)
+        else:
+            ai = s.ai_state
+            ai.situation = "DISABLED"
+            ai.action = "track"
+            ai.confidence = 0.0
+            ai.explanation = "AI brain disabled by operator (ablation)"
+            ai.fallback_active = True
+        self._update_handoff(trk_state)
+        self._update_view_tail(search_active, camera_cmd, gt,
+                               error_x, error_y, error_px)
+
+    def _run_brain_step(
+        self,
+        mission_features: ObservationFeatures,
+        processing_ms: float,
+    ) -> None:
+        """Mission-brain decision + safety gating + failure risk.
+
+        Split out of _update_state_from_pipeline so the AI layer can be
+        bypassed live (ablation) without touching the track/control path.
+        """
+        s = self._state
         self._last_mission_decision = self._mission_policy.decide(
             MissionObservation(
                 features=mission_features,
@@ -1078,6 +1513,60 @@ class ProcessingWorker(QThread):
                 self._adaptive_roi.expand_for_risk(ai.failure_risk)
         except Exception:
             pass
+
+    def _update_handoff(self, trk_state: Any) -> None:
+        """GT-free coarse-stability signal for a fine-pointing stage.
+
+        Handoff becomes READY after 15 consecutive measured frames that
+        are TRACKING + locked + low uncertainty + low residual. Any
+        unstable frame clears it (re-arming logs again on recovery).
+        """
+        fresh = (trk_state.time_since_last_detection_s
+                 <= max(self._sim_dt, 1e-6) * 1.5)
+        stable = (
+            trk_state.state.name == "TRACKING"
+            and bool(trk_state.locked)
+            and not bool(trk_state.prediction_only)
+            and fresh
+            and (trk_state.uncertainty_x + trk_state.uncertainty_y)
+            < _HANDOFF_UNCERTAINTY_SUM_PX
+            and trk_state.residual_magnitude < _HANDOFF_RESIDUAL_PX
+        )
+        if stable:
+            if self._handoff_streak == 0:
+                self._handoff_streak_start_s = self._sim_time
+            self._handoff_streak += 1
+        else:
+            self._handoff_streak = 0
+            self._handoff_ready = False
+        if (self._handoff_streak >= _HANDOFF_STREAK_FRAMES
+                and not self._handoff_ready):
+            self._handoff_ready = True
+            self.log.emit(
+                "INFO",
+                "HANDOFF READY: coarse alignment stable — "
+                "suitable for fine-pointing stage",
+            )
+        self._state.handoff_ready = self._handoff_ready
+        self._state.handoff_stable_s = (
+            (self._sim_time - self._handoff_streak_start_s)
+            if self._handoff_streak else 0.0
+        )
+
+    def _update_view_tail(
+        self,
+        search_active: bool,
+        camera_cmd: Any,
+        gt: Any,
+        error_x: float | None,
+        error_y: float | None,
+        error_px: float | None,
+    ) -> None:
+        """Non-AI view-state tail: ROI, search HUD, targets, trails,
+        terminal, disturbance, scorecard, emit. Runs every frame
+        regardless of the AI ablation toggle."""
+        s = self._state
+        ai = s.ai_state
 
         # --- ROI + model provenance straight from runtime objects ---
         try:
@@ -1128,8 +1617,50 @@ class ProcessingWorker(QThread):
                     size_px=10.0,
                 )
                 tv.target_id = wt.target_id
+                # Per-target motion trail (bounded deque per id).
+                if wt.active:
+                    trail = self._target_trails.get(wt.target_id)
+                    if trail is None:
+                        from collections import deque as _dq
+                        trail = _dq(maxlen=self._trail_len)
+                        self._target_trails[wt.target_id] = trail
+                    trail.append((float(wt.x), float(wt.y), float(wt.z)))
+                    tv.trail = list(trail)
                 new_targets.append(tv)
+            # Drop trails of removed targets.
+            live_ids = {wt.target_id for wt in world.targets}
+            for tid in list(self._target_trails):
+                if tid not in live_ids:
+                    del self._target_trails[tid]
             s.targets_all = new_targets
+
+        # --- Camera boresight trail (search sweep path) ---
+        try:
+            if self._camera is not None:
+                from fsoc_tracker.simulation.camera.geometry import (
+                    camera_rotation_matrix as _rot,
+                )
+                cst = self._camera.state
+                depth = self._trail_depth
+                desig = s.designated_beacon_id
+                for t in s.targets_all:
+                    if t.target_id == desig and t.visible:
+                        depth = max(1.0, float(
+                            ((t.world_x - cst.position_x) ** 2
+                             + (t.world_y - cst.position_y) ** 2
+                             + (t.world_z - cst.position_z) ** 2) ** 0.5))
+                        break
+                self._trail_depth = depth
+                R = _rot(cst.pan_deg, cst.tilt_deg, cst.roll_deg)
+                fx, fy, fz = R[0][2], R[1][2], R[2][2]
+                self._camera_trail.append((
+                    float(cst.position_x + fx * depth),
+                    float(cst.position_y + fy * depth),
+                    float(cst.position_z + fz * depth),
+                ))
+                s.camera_trail = list(self._camera_trail)
+        except Exception:
+            pass
 
         # --- Terminal A = tracking camera position/orientation ---
         # The optical axis comes from the camera's current pan/tilt.

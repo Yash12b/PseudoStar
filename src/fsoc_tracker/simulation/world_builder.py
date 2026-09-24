@@ -114,6 +114,26 @@ def set_terminal_a_orientation(
     return cfg.terminal
 
 
+def set_terminal_motion(
+    cfg: ScenarioConfig, motion: str = "drift", **params: float,
+) -> TerminalConfig:
+    """Give Terminal A itself a motion (e.g. two moving satellites).
+
+    "static" (default) keeps today's fixed-tripod behavior. "drift"
+    integrates constant velocity + attitude rates every engine step.
+    Accepted params: vx, vy, vz (world units/s), yaw_rate_deg_s,
+    pitch_rate_deg_s, roll_rate_deg_s. Unknown motion names raise
+    ValueError immediately (never drift silently on a typo).
+    """
+    from fsoc_tracker.simulation.platform import PLATFORM_MOTIONS
+    if motion not in PLATFORM_MOTIONS:
+        raise ValueError(f"Unknown platform motion: {motion!r}")
+    cfg.terminal.platform_motion = motion
+    cfg.terminal.platform_motion_params = {k: float(v)
+                                           for k, v in params.items()}
+    return cfg.terminal
+
+
 def get_terminal_a_state(cfg: ScenarioConfig) -> dict[str, float]:
     """Read back Terminal A pose for verification."""
     t = cfg.terminal
@@ -142,6 +162,8 @@ def add_beacon(
     seed: int = 42,
     size_px: float = 10.0,
     brightness: float = 1.0,
+    shape: str = "square",
+    code: str = "",
     active: bool = True,
     is_primary: bool = False,
 ) -> BeaconConfig:
@@ -156,6 +178,8 @@ def add_beacon(
         seed=int(seed),
         size_px=float(size_px),
         brightness=float(brightness),
+        shape=str(shape),
+        code=str(code or ""),
         is_primary=bool(is_primary),
         active=bool(active),
     )
@@ -474,8 +498,8 @@ def _default_motion_params(
 # ---------------------------------------------------------------------------
 
 _BENCHMARK_PROFILES = (
-    "nominal", "multi", "distractor", "loss", "noise", "fog", "jitter",
-    "fast",
+    "nominal", "multi", "distractor", "coded", "moving", "loss", "noise",
+    "fog", "jitter", "fast",
 )
 
 
@@ -523,6 +547,32 @@ def build_benchmark_world(profile: str, seed: int = 42) -> ScenarioConfig:
                 500.0 + i * 20, motion="straight_line",
                 motion_params={"vx": 0.05 * (i + 1), "vy": 0.01},
                 seed=rng.randint(0, 99999), brightness=0.8)
+    elif profile == "coded":
+        # Coded-identity duel: primary blinks CODE_A, five equal decoys
+        # blink the exact inverse CODE_B (same size/brightness/geometry
+        # class as distractor). Only the temporal code separates them.
+        from fsoc_tracker.tracking.identity import CODE_A, CODE_B
+        add_beacon(cfg, 1000.0, 1000.0, 500.0, motion="straight_line",
+                   motion_params={"x0": 1000.0, "y0": 1000.0, "z0": 500.0,
+                                  "vx": 0.1, "vy": 0.02},
+                   seed=rng.randint(0, 99999), is_primary=True, code=CODE_A)
+        cfg.primary_beacon_id = 0
+        for i in range(1, 6):
+            add_beacon(
+                cfg, 1000.0 + (i - 3) * 1.5, 1000.0 + (i % 3 - 1) * 1.0,
+                500.0 + i * 20, motion="straight_line",
+                motion_params={"vx": 0.05 * (i + 1), "vy": 0.01},
+                seed=rng.randint(0, 99999), brightness=1.0, code=CODE_B)
+    elif profile == "moving":
+        # Two moving endpoints: Terminal A drifts laterally and yaws
+        # slowly while the beacon flies its own straight line. Rates
+        # stay inside the 5 deg/s gimbal authority with margin.
+        add_beacon(cfg, 1000.0, 1000.0, 500.0, motion="straight_line",
+                   motion_params={"x0": 1000.0, "y0": 1000.0, "z0": 500.0,
+                                  "vx": 0.3, "vy": 0.2},
+                   seed=rng.randint(0, 99999), is_primary=True)
+        cfg.primary_beacon_id = 0
+        set_terminal_motion(cfg, "drift", vx=0.3, yaw_rate_deg_s=0.2)
     elif profile == "loss":
         # Fast beacon plus harness-applied temporal disappearance windows
         # (the runner enables them for this profile; see benchmark runner).

@@ -14,7 +14,6 @@ position.
 
 from __future__ import annotations
 
-
 from fsoc_tracker.simulation.camera.geometry import camera_rotation_matrix
 from fsoc_tracker.simulation.camera.projection import (
     angle_to_pixel,

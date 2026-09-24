@@ -21,23 +21,21 @@ import math
 import numpy as np
 import pytest
 
+from fsoc_tracker.control.config import ControllerConfig
+from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
 from fsoc_tracker.perception.config import PerceptionConfig
-from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.tracking.config import TrackerConfig
-from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
-from fsoc_tracker.control.config import ControllerConfig
-from fsoc_tracker.simulation.engine import SimulationEngine
-from fsoc_tracker.simulation.world import WorldConfig
+from fsoc_tracker.pipeline.eval import EvalSink
+from fsoc_tracker.pipeline.pipeline import TrackingMetrics, TrackingPipeline, compute_metrics
+from fsoc_tracker.pipeline.sources import SimulationSource
 from fsoc_tracker.simulation.camera.camera import VirtualCamera
-from fsoc_tracker.simulation.camera.state import CameraState, CameraIntrinsics
 from fsoc_tracker.simulation.camera.projection import pixel_to_angle
+from fsoc_tracker.simulation.camera.state import CameraIntrinsics, CameraState
+from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.sensor.config import SensorConfig
 from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-from fsoc_tracker.pipeline.pipeline import TrackingPipeline, compute_metrics, TrackingMetrics
-from fsoc_tracker.pipeline.sources import SimulationSource
-from fsoc_tracker.pipeline.eval import EvalSink
-
+from fsoc_tracker.simulation.world import WorldConfig
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 # ---------------------------------------------------------------------------
 # Helpers

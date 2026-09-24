@@ -138,11 +138,9 @@ fsoc_tracker/
 │   ├── gui/              # PySide6 aerospace HUD
 │   ├── pipeline/         # Authoritative pipeline orchestrator
 │   ├── cli/              # CLI runners (simulation, benchmark)
-│   ├── validation/       # Benchmark threshold helpers (numbered SIH suite retired;
-│   │                     # use generated-world benchmarks instead)
 │   ├── advanced/         # Adaptive intelligence, diagnostics
 │   └── app/              # Entry points
-├── tests/                # 1280+ unit + integration tests
+├── tests/                # 1420+ unit + integration tests
 ├── docs/                 # Architecture, algorithms, development
 ├── artifacts/            # Trained models and datasets
 │   ├── models/           # mission/policy/failure/temporal weights (tracked)

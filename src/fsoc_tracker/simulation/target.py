@@ -43,6 +43,13 @@ class WorldTargetState:
     width: float = 0.01
     height: float = 0.01
     brightness: float = 1.0
+    # Temporal identity code (binary string); "" = steady ON. The sensor
+    # renderer multiplies brightness by the code bit at each frame index.
+    code: str = ""
+    # Explicit per-target pixel size. None = fall back to the sensor's
+    # default (today's behavior everywhere); a value overrides it in
+    # both FIXED and DISTANCE size modes.
+    size_px: float | None = None
 
     trajectory_type: str = ""
     trajectory_params: dict[str, Any] = field(default_factory=dict)
@@ -79,6 +86,8 @@ class WorldTargetState:
             "width": self.width,
             "height": self.height,
             "brightness": self.brightness,
+            "code": self.code,
+            "size_px": self.size_px,
             "trajectory_type": self.trajectory_type,
             "trajectory_params": self.trajectory_params,
             "seed": self.seed,

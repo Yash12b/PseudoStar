@@ -68,6 +68,7 @@ class HybridBeaconDetector(PerceptionEngine):
         config: PerceptionConfig | None = None,
         fusion_policy: FusionPolicy = FusionPolicy.AI_OR_CLASSICAL,
         proximity_threshold: float = 10.0,
+        weights_path: str | None = None,
     ) -> None:
         super().__init__(config)
         self._fusion_policy = fusion_policy
@@ -76,12 +77,15 @@ class HybridBeaconDetector(PerceptionEngine):
         # Classical backend (always available)
         self._classical = ClassicalBeaconDetector(config)
 
-        # AI backend (may fail to load)
+        # AI backend (may fail to load). ai_available is True ONLY with
+        # trained weights loaded — never for random initialization.
         self._ai: AIBeaconDetector | None = None
         self._ai_available = False
         try:
             self._ai = AIBeaconDetector(model_config, config)
-            self._ai_available = True
+            if weights_path is not None:
+                self._ai.load_weights(weights_path)
+            self._ai_available = bool(self._ai.model.trained)
         except Exception:
             self._ai_available = False
 

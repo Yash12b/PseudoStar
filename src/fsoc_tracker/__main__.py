@@ -2,6 +2,7 @@
 
 import sys
 
+
 def main() -> None:
     args = sys.argv[1:]
 
@@ -10,6 +11,7 @@ def main() -> None:
         sys.argv = [sys.argv[0]] + args
         try:
             from PySide6.QtWidgets import QApplication
+
             from fsoc_tracker.gui.main_window import MainWindow
         except ImportError:
             print("ERROR: PySide6 not installed. Run: pip install PySide6", file=sys.stderr)

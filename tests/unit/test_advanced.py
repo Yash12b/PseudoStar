@@ -19,11 +19,8 @@ Tests cover:
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Image Quality Analysis
@@ -107,7 +104,7 @@ class TestImageQualityAnalyzer:
         assert "mean_brightness" in d
 
     def test_custom_thresholds(self):
-        from fsoc_tracker.perception.quality import ImageQualityAnalyzer, QualityThresholds, QualityLevel
+        from fsoc_tracker.perception.quality import ImageQualityAnalyzer, QualityThresholds
         thresholds = QualityThresholds(min_brightness=100.0)
         analyzer = ImageQualityAnalyzer(thresholds)
         img = np.full((50, 50), 50, dtype=np.uint8)
@@ -169,7 +166,7 @@ class TestUncertaintyEstimator:
 
 class TestPerceptionPolicy:
     def test_searching_gives_full_frame(self):
-        from fsoc_tracker.perception.policy import PerceptionPolicy, PerceptionMode
+        from fsoc_tracker.perception.policy import PerceptionMode, PerceptionPolicy
         from fsoc_tracker.perception.quality import QualityState
         from fsoc_tracker.perception.uncertainty import UncertaintyState
         policy = PerceptionPolicy()
@@ -177,8 +174,8 @@ class TestPerceptionPolicy:
         assert decision.mode == PerceptionMode.FULL_FRAME
 
     def test_tracking_gives_roi(self):
-        from fsoc_tracker.perception.policy import PerceptionPolicy, PerceptionMode
-        from fsoc_tracker.perception.quality import QualityState, QualityLevel
+        from fsoc_tracker.perception.policy import PerceptionMode, PerceptionPolicy
+        from fsoc_tracker.perception.quality import QualityLevel, QualityState
         from fsoc_tracker.perception.uncertainty import UncertaintyState
         policy = PerceptionPolicy()
         q = QualityState(level=QualityLevel.GOOD)
@@ -187,8 +184,8 @@ class TestPerceptionPolicy:
 
     def test_high_uncertainty_widens_roi(self):
         from fsoc_tracker.perception.policy import PerceptionPolicy
-        from fsoc_tracker.perception.quality import QualityState, QualityLevel
-        from fsoc_tracker.perception.uncertainty import UncertaintyState, UncertaintyLevel
+        from fsoc_tracker.perception.quality import QualityLevel, QualityState
+        from fsoc_tracker.perception.uncertainty import UncertaintyLevel, UncertaintyState
         policy = PerceptionPolicy()
         q = QualityState(level=QualityLevel.GOOD)
         u = UncertaintyState(level=UncertaintyLevel.HIGH)
@@ -196,8 +193,8 @@ class TestPerceptionPolicy:
         assert decision.roi_expand_factor >= 2.0
 
     def test_critical_quality_fallback(self):
-        from fsoc_tracker.perception.policy import PerceptionPolicy, PerceptionMode
-        from fsoc_tracker.perception.quality import QualityState, QualityLevel
+        from fsoc_tracker.perception.policy import PerceptionMode, PerceptionPolicy
+        from fsoc_tracker.perception.quality import QualityLevel, QualityState
         from fsoc_tracker.perception.uncertainty import UncertaintyState
         policy = PerceptionPolicy()
         q = QualityState(level=QualityLevel.CRITICAL)
@@ -212,7 +209,11 @@ class TestPerceptionPolicy:
 
 class TestFusionEngine:
     def _make_result(self, detected: bool, cx: float, cy: float, conf: float):
-        from fsoc_tracker.perception.models import PerceptionResult, BeaconDetection, PerceptionStatus
+        from fsoc_tracker.perception.models import (
+            BeaconDetection,
+            PerceptionResult,
+            PerceptionStatus,
+        )
         det = BeaconDetection(
             detected=detected, center_x=cx, center_y=cy, confidence=conf,
             visibility_state=PerceptionStatus.DETECTED if detected else PerceptionStatus.NO_TARGET,
@@ -224,7 +225,7 @@ class TestFusionEngine:
         )
 
     def test_classical_only(self):
-        from fsoc_tracker.perception.fusion import FusionEngine, FusionMethod
+        from fsoc_tracker.perception.fusion import FusionEngine
         engine = FusionEngine()
         classical = self._make_result(True, 320.0, 240.0, 0.8)
         fused = engine.fuse(classical_result=classical)
@@ -263,7 +264,7 @@ class TestFusionEngine:
         assert fused.confidence < 0.3
 
     def test_confidence_rejection(self):
-        from fsoc_tracker.perception.fusion import FusionEngine, FusionConfig
+        from fsoc_tracker.perception.fusion import FusionConfig, FusionEngine
         config = FusionConfig(min_fusion_confidence=0.5)
         engine = FusionEngine(config)
         classical = self._make_result(True, 320.0, 240.0, 0.1)
@@ -281,7 +282,7 @@ class TestFusionEngine:
         assert fused_good.fused_score >= fused_bad.fused_score
 
     def test_max_confidence_method(self):
-        from fsoc_tracker.perception.fusion import FusionEngine, FusionConfig, FusionMethod
+        from fsoc_tracker.perception.fusion import FusionConfig, FusionEngine, FusionMethod
         config = FusionConfig(method=FusionMethod.MAX_CONFIDENCE)
         engine = FusionEngine(config)
         classical = self._make_result(True, 320.0, 240.0, 0.5)
@@ -327,7 +328,7 @@ class TestManeuverDetector:
         assert state.motion_class == MotionClass.UNPREDICTABLE
 
     def test_reset(self):
-        from fsoc_tracker.tracking.maneuver import ManeuverDetector, MotionClass
+        from fsoc_tracker.tracking.maneuver import ManeuverDetector
         detector = ManeuverDetector()
         detector.update(20.0, 20.0, 100.0, 200.0, 1.0 / 30.0)
         detector.reset()
@@ -354,7 +355,11 @@ class TestCoarseToFineRefiner:
         return img
 
     def test_intensity_weighted_refinement(self):
-        from fsoc_tracker.perception.refinement import CoarseToFineRefiner, RefinementMethod, RefinementConfig
+        from fsoc_tracker.perception.refinement import (
+            CoarseToFineRefiner,
+            RefinementConfig,
+            RefinementMethod,
+        )
         refiner = CoarseToFineRefiner(RefinementConfig(method=RefinementMethod.INTENSITY_WEIGHTED))
         img = self._make_image_with_beacon(50.5, 50.5)
         result = refiner.refine(img, 50.0, 50.0)
@@ -399,7 +404,7 @@ class TestSearchController:
         assert state.search_radius_px > 0
 
     def test_search_advances_phases(self):
-        from fsoc_tracker.tracking.search import SearchController, SearchPhase, SearchConfig
+        from fsoc_tracker.tracking.search import SearchConfig, SearchController, SearchPhase
         config = SearchConfig(
             local_timeout_frames=3,
             uncertainty_timeout_frames=3,
@@ -414,7 +419,7 @@ class TestSearchController:
         assert ctrl.state.phase != SearchPhase.LOCAL_LAST_KNOWN
 
     def test_search_region_bounded(self):
-        from fsoc_tracker.tracking.search import SearchController, SearchConfig
+        from fsoc_tracker.tracking.search import SearchConfig, SearchController
         config = SearchConfig(image_width=640, image_height=480)
         ctrl = SearchController(config)
         ctrl.begin_search(320.0, 240.0, 50.0, 0.0, 0.0)
@@ -558,8 +563,8 @@ class TestAdaptiveController:
 
 class TestAdaptiveKalman:
     def test_quality_affects_r(self):
+        from fsoc_tracker.perception.quality import QualityLevel, QualityState
         from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
-        from fsoc_tracker.perception.quality import QualityState, QualityLevel
         mgr = AdaptiveKalmanManager()
         q_good = QualityState(level=QualityLevel.GOOD)
         q_bad = QualityState(level=QualityLevel.POOR)
@@ -588,8 +593,8 @@ class TestAdaptiveKalman:
         assert mgr.r_scale <= 10.0
 
     def test_smoothing(self):
+        from fsoc_tracker.perception.quality import QualityLevel, QualityState
         from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
-        from fsoc_tracker.perception.quality import QualityState, QualityLevel
         mgr = AdaptiveKalmanManager()
         q_bad = QualityState(level=QualityLevel.CRITICAL)
         for _ in range(3):
@@ -597,8 +602,9 @@ class TestAdaptiveKalman:
         assert mgr.r_scale < 10.0
 
     def test_apply_to_matrices(self):
-        from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
         import numpy as np
+
+        from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
         mgr = AdaptiveKalmanManager()
         mgr._current_q_scale = 2.0
         mgr._current_r_scale = 3.0
@@ -609,7 +615,10 @@ class TestAdaptiveKalman:
         assert R_a[0, 0] == pytest.approx(3.0)
 
     def test_disabled_returns_ones(self):
-        from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager, AdaptiveKalmanConfig
+        from fsoc_tracker.tracking.adaptive_kalman import (
+            AdaptiveKalmanConfig,
+            AdaptiveKalmanManager,
+        )
         config = AdaptiveKalmanConfig(enabled=False)
         mgr = AdaptiveKalmanManager(config)
         q, r = mgr.update()
@@ -676,20 +685,20 @@ class TestPIDTuning:
 
 class TestDiagnosticLog:
     def test_log_event(self):
-        from fsoc_tracker.advanced.diagnostics import DiagnosticLog, DiagnosticEvent
+        from fsoc_tracker.advanced.diagnostics import DiagnosticEvent, DiagnosticLog
         log = DiagnosticLog()
         log.log(DiagnosticEvent.SEARCH_START, 0.0, "target_lost")
         assert len(log.entries) == 1
 
     def test_bounded_log(self):
-        from fsoc_tracker.advanced.diagnostics import DiagnosticLog, DiagnosticEvent
+        from fsoc_tracker.advanced.diagnostics import DiagnosticEvent, DiagnosticLog
         log = DiagnosticLog(max_entries=10)
         for i in range(20):
             log.log(DiagnosticEvent.PERCEPTION_SWITCH, float(i), "reason")
         assert len(log.entries) <= 10
 
     def test_query_by_type(self):
-        from fsoc_tracker.advanced.diagnostics import DiagnosticLog, DiagnosticEvent
+        from fsoc_tracker.advanced.diagnostics import DiagnosticEvent, DiagnosticLog
         log = DiagnosticLog()
         log.log(DiagnosticEvent.SEARCH_START, 0.0, "r1")
         log.log(DiagnosticEvent.LOCK_GAINED, 0.1, "r2")
@@ -698,7 +707,7 @@ class TestDiagnosticLog:
         assert len(search_events) == 1
 
     def test_count_recent(self):
-        from fsoc_tracker.advanced.diagnostics import DiagnosticLog, DiagnosticEvent
+        from fsoc_tracker.advanced.diagnostics import DiagnosticEvent, DiagnosticLog
         log = DiagnosticLog()
         log.log(DiagnosticEvent.OSCILLATION_DETECTED, 1.0, "r")
         log.log(DiagnosticEvent.OSCILLATION_DETECTED, 1.5, "r")
@@ -707,7 +716,7 @@ class TestDiagnosticLog:
         assert count == 2
 
     def test_to_list(self):
-        from fsoc_tracker.advanced.diagnostics import DiagnosticLog, DiagnosticEvent
+        from fsoc_tracker.advanced.diagnostics import DiagnosticEvent, DiagnosticLog
         log = DiagnosticLog()
         log.log(DiagnosticEvent.SEARCH_START, 0.0, "r")
         lst = log.to_list()
@@ -747,11 +756,15 @@ class TestAdvancedConfig:
 
 class TestEndToEndAdvanced:
     def test_quality_to_policy_to_fusion_pipeline(self):
+        from fsoc_tracker.perception.fusion import FusionEngine
+        from fsoc_tracker.perception.models import (
+            BeaconDetection,
+            PerceptionResult,
+            PerceptionStatus,
+        )
+        from fsoc_tracker.perception.policy import PerceptionMode, PerceptionPolicy
         from fsoc_tracker.perception.quality import ImageQualityAnalyzer, QualityLevel
         from fsoc_tracker.perception.uncertainty import UncertaintyEstimator, UncertaintyLevel
-        from fsoc_tracker.perception.policy import PerceptionPolicy, PerceptionMode
-        from fsoc_tracker.perception.fusion import FusionEngine
-        from fsoc_tracker.perception.models import PerceptionResult, BeaconDetection, PerceptionStatus
 
         rng = np.random.default_rng(42)
         img = rng.integers(80, 180, size=(480, 640), dtype=np.uint8)
@@ -786,8 +799,8 @@ class TestEndToEndAdvanced:
         assert fused.detected
 
     def test_maneuver_to_adaptive_kalman(self):
-        from fsoc_tracker.tracking.maneuver import ManeuverDetector, MotionClass
         from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
+        from fsoc_tracker.tracking.maneuver import ManeuverDetector
 
         detector = ManeuverDetector()
         manager = AdaptiveKalmanManager()
@@ -801,7 +814,7 @@ class TestEndToEndAdvanced:
         assert manager.q_scale > 1.0
 
     def test_search_to_reacquisition_flow(self):
-        from fsoc_tracker.tracking.search import SearchController, SearchPhase
+        from fsoc_tracker.tracking.search import SearchController
         ctrl = SearchController()
         ctrl.begin_search(320.0, 240.0, 50.0, 0.0, 0.0)
         ctrl.update(1.0 / 30.0)

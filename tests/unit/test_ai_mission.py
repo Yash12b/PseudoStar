@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 from fsoc_tracker.ai.mission import (
-    DecisionLogger,
     AIMissionBrain,
+    DecisionLogger,
     ExpertPolicy,
     MissionAction,
     MissionDecisionExecutor,

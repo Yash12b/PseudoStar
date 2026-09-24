@@ -42,7 +42,7 @@ def _relu(x: np.ndarray) -> np.ndarray:
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -50, 50)))
 
 
 def _conv2d(
@@ -72,13 +72,18 @@ def _conv2d(
     h_out = (h - kh) // stride + 1
     w_out = (w - kw) // stride + 1
 
-    output = np.zeros((c_out, h_out, w_out), dtype=np.float32)
-    for co in range(c_out):
-        for i in range(h_out):
-            for j in range(w_out):
-                patch = input[:, i * stride: i * stride + kh, j * stride: j * stride + kw]
-                output[co, i, j] = np.sum(patch * weight[co]) + bias[co]
-    return output
+    # im2col + GEMM: algebraically identical to the naive per-pixel
+    # loop, ~100x faster (the loop made real-time inference impossible).
+    c_in, h, w = input.shape
+    inp = np.ascontiguousarray(input)
+    shape = (c_in, kh, kw, h_out, w_out)
+    strides = (inp.strides[0], inp.strides[1], inp.strides[2],
+               inp.strides[1] * stride, inp.strides[2] * stride)
+    cols = np.lib.stride_tricks.as_strided(inp, shape=shape, strides=strides)
+    cols_2d = cols.reshape(c_in * kh * kw, h_out * w_out)
+    out = weight.reshape(c_out, -1).astype(np.float64) @ cols_2d.astype(np.float64)
+    out = out + bias.reshape(c_out, 1)
+    return out.reshape(c_out, h_out, w_out).astype(np.float32)
 
 
 def _maxpool2d(input: np.ndarray, kernel: int = 2, stride: int = 2) -> np.ndarray:
@@ -86,6 +91,11 @@ def _maxpool2d(input: np.ndarray, kernel: int = 2, stride: int = 2) -> np.ndarra
     c, h, w = input.shape
     h_out = h // stride
     w_out = w // stride
+    if kernel == stride:
+        # Reshape-based fast path (exact same windows as the loop).
+        trimmed = np.ascontiguousarray(input[:, :h_out * stride, :w_out * stride])
+        return trimmed.reshape(c, h_out, stride, w_out, stride).max(
+            axis=(2, 4)).astype(np.float32)
     output = np.zeros((c, h_out, w_out), dtype=np.float32)
     for i in range(h_out):
         for j in range(w_out):

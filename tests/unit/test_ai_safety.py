@@ -14,22 +14,18 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
-import pytest
-
+from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
+from fsoc_tracker.ai.explain import ExplainabilityEngine
+from fsoc_tracker.ai.failure_predictor import FailurePredictor
 from fsoc_tracker.ai.mission import (
     AIMissionBrain,
     MissionAction,
-    MissionDecision,
     MissionObservation,
     ObservationFeatures,
     SafetyEnvelope,
     SafetyLimits,
     Situation,
 )
-from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
-from fsoc_tracker.ai.failure_predictor import FailurePredictor
-from fsoc_tracker.ai.explain import ExplainabilityEngine
 
 
 def _make_obs(**kwargs) -> ObservationFeatures:

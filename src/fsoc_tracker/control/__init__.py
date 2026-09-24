@@ -8,7 +8,7 @@ Modules:
 """
 
 from fsoc_tracker.control.command import ControlCommand, ControlTelemetry
-from fsoc_tracker.control.config import ControlMode, ControllerConfig
+from fsoc_tracker.control.config import ControllerConfig, ControlMode
 from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.control.pid import PIDController
 

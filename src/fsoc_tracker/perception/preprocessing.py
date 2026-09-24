@@ -123,6 +123,11 @@ def preprocess_frame(
 
     if config.normalize_contrast_enabled:
         img = normalize_contrast(img, bg)
+        # Normalization remaps background to ~0, so the pre-normalization
+        # background estimate no longer describes the image. Re-estimate
+        # on the normalized pixels (threshold math depends on it).
+        bg = estimate_background(img, config.background_estimate_method,
+                                 config.background_percentile)
 
     return PreprocessingResult(
         image=img,

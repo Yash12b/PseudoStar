@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fsoc_tracker.ai.adaptive_roi import AdaptiveROI, ROISizeMode, ROIState
-from fsoc_tracker.ai.failure_predictor import FailurePredictor, FailurePrediction
+from fsoc_tracker.ai.adaptive_roi import AdaptiveROI
+from fsoc_tracker.ai.failure_predictor import FailurePredictor
 from fsoc_tracker.ai.mission import ObservationFeatures
 from fsoc_tracker.ai.neural import torch_backend_available
 
@@ -134,8 +134,9 @@ class TestFailurePredictor:
 @pytest.mark.skipif(not torch_backend_available(), reason="PyTorch not available")
 class TestTemporalTraining:
     def test_build_and_forward(self):
-        from fsoc_tracker.ai.neural import build_temporal_predictor
         import torch
+
+        from fsoc_tracker.ai.neural import build_temporal_predictor
 
         model = build_temporal_predictor(feature_dim=15, hidden_dim=16, horizons_s=(0.025, 0.05, 0.1))
         x = torch.randn(2, 10, 15)

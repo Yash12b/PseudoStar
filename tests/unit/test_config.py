@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from fsoc_tracker.config.settings import (
-    AppConfig_Root,
     CameraConfig,
     ControlConfig,
+    RootConfig,
     TrackingConfig,
     load_config,
 )
@@ -30,11 +30,11 @@ class TestCameraConfig:
         assert cfg.update_rate_hz == 30.0
 
     def test_rejects_zero_width(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CameraConfig(width=0)
 
     def test_rejects_negative_fov(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CameraConfig(horizontal_fov_deg=-1.0)
 
 
@@ -107,7 +107,7 @@ class TestAppConfigRoot:
     """Tests for the root configuration object."""
 
     def test_all_sub_configs_present(self) -> None:
-        config = AppConfig_Root()
+        config = RootConfig()
         assert hasattr(config, "app")
         assert hasattr(config, "camera")
         assert hasattr(config, "target")

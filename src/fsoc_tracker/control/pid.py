@@ -142,9 +142,11 @@ class PIDController:
         if math.isnan(error) or math.isinf(error):
             return 0.0
 
-        # Deadband
+        # Deadband: hold zero output AND clear the integrator so no
+        # stale integral resumes as a kick on exit (anti-hunt).
         if abs(error) < self._deadband:
             self._in_deadband = True
+            self._integral = 0.0
             self._p_term = 0.0
             self._i_term = 0.0
             self._d_term = 0.0

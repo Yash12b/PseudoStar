@@ -29,22 +29,17 @@ import pytest
 
 from fsoc_tracker.simulation.camera.camera import VirtualCamera
 from fsoc_tracker.simulation.camera.state import CameraState
-from fsoc_tracker.simulation.sensor.beacon import deposit_beacon
 from fsoc_tracker.simulation.sensor.config import (
-    BeaconShape,
-    ColorMode,
     SensorConfig,
-    SizeMode,
 )
 from fsoc_tracker.simulation.sensor.models import (
     GroundTruth,
     RenderedFrame,
     TargetVisibility,
 )
-from fsoc_tracker.simulation.sensor.psf import apply_psf, gaussian_psf_2d
-from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer, render_debug_view
+from fsoc_tracker.simulation.sensor.psf import gaussian_psf_2d
+from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
 from fsoc_tracker.simulation.target import WorldTargetState
-
 
 # ---------------------------------------------------------------------------
 # Helpers

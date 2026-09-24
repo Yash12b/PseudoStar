@@ -68,6 +68,54 @@ class TrackerConfig(BaseModel):
     minimum_detection_confidence: float = Field(default=0.2, ge=0, le=1,
         description="Minimum confidence to consider a detection valid.")
 
+    # Appearance-gated association (anti-hijack): when several candidates
+    # pass the geometric gate, prefer the one resembling the tracked
+    # target's running size/brightness signature. Weight 0 (default)
+    # reproduces pure-geometric association exactly.
+    appearance_weight: float = Field(default=0.0, ge=0.0, le=20.0,
+        description="Appearance term weight in association score.")
+    appearance_area_scale: float = Field(default=100.0, gt=0,
+        description="Normalizer for area differences (px^2).")
+    appearance_intensity_scale: float = Field(default=100.0, gt=0,
+        description="Normalizer for mean-intensity differences.")
+    appearance_ema_alpha: float = Field(default=0.2, gt=0.0, le=1.0,
+        description="EMA rate for the running appearance signature.")
+
+    # Coded beacon identity (temporal on/off keying): the true beacon
+    # blinks an operator-configured binary code; decoys blink a
+    # different code or burn steady. Among geometrically gated
+    # candidates, association prefers the code-matching one. Empty
+    # expected code (default) disables identity entirely — association
+    # is then bit-identical to the geometry/appearance path.
+    identity_expected_code: str = Field(default="",
+        description="Operator-configured binary beacon code, e.g. '10110010'.")
+    identity_weight: float = Field(default=0.0, ge=0.0, le=160.0,
+        description="Identity term weight in association score (px-equivalent).")
+    identity_frames_per_bit: int = Field(default=3, ge=1, le=30,
+        description="Frames per code bit (renderer modulation + decoder agree).")
+    identity_chain_gate_px: float = Field(default=15.0, gt=0,
+        description="Proximity gate chaining per-candidate intensity "
+        "samples. Kept well under typical decoy spacing so nearby "
+        "different-code sources do not merge into one chain.")
+    identity_veto_threshold: float = Field(default=0.75, ge=0.0, le=1.0,
+        description="Confident code match below this skips the candidate "
+        "before ranking (coast through the true beacon's OFF gaps "
+        "instead of hijacking). A steady burner matches half the code "
+        "by construction, so the default also rejects unkeyed "
+        "lookalikes.")
+
+    # Second-chance (BYTE-style) rescue pass: when the primary
+    # association fails on a live track, retry sub-threshold candidates
+    # before declaring a miss. Bridges brief fades/occlusions without
+    # re-initializing the track. Capped so persistent clutter cannot
+    # hold a dead track alive.
+    rescue_enabled: bool = Field(default=True,
+        description="Enable the low-confidence rescue pass.")
+    rescue_confidence_floor: float = Field(default=0.1, ge=0, le=1,
+        description="Lower confidence bound for rescue candidates.")
+    rescue_max_streak: int = Field(default=5, ge=1,
+        description="Max consecutive rescue updates before forcing a miss.")
+
     acquisition_min_consecutive_hits: int = Field(default=3, ge=1,
         description="Minimum consecutive valid detections before transitioning to TRACKING.")
     acquisition_timeout_s: float = Field(default=2.0, gt=0,

@@ -37,6 +37,9 @@ artifacts/reports/*
 artifacts/models/heavy-training-v1/
 artifacts/datasets/beacon-v2/
 artifacts/datasets/beacon-v3/
+# Regenerable demo/eval videos (see scripts/generate_*.py); the small
+# bp2_noisy_eval_gt.csv sidecar stays tracked.
+artifacts/demo/*.mp4
 !data/generated/.gitkeep
 !data/outputs/.gitkeep
 !logs/.gitkeep

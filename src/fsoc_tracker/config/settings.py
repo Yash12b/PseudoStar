@@ -17,12 +17,11 @@ from pydantic import BaseModel, Field
 
 from fsoc_tracker.core.exceptions import ConfigurationError
 
-
 # ---------------------------------------------------------------------------
 # Config groups
 # ---------------------------------------------------------------------------
 
-class AppConfig(BaseModel):
+class AppSectionConfig(BaseModel):
     """Top-level application settings."""
 
     name: str = "FSOC Tracker"
@@ -215,13 +214,13 @@ class SensorImageConfig(BaseModel):
 # Root config
 # ---------------------------------------------------------------------------
 
-class AppConfig_Root(BaseModel):
+class RootConfig(BaseModel):
     """Top-level configuration combining all sub-configs.
 
     This is the object returned by ``load_config()``.
     """
 
-    app: AppConfig = Field(default_factory=AppConfig)
+    app: AppSectionConfig = Field(default_factory=AppSectionConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
@@ -236,8 +235,8 @@ class AppConfig_Root(BaseModel):
     benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
 
 
-# Short alias used throughout the codebase.
-AppConfig = AppConfig_Root
+# Short alias used throughout the codebase (root config).
+AppConfig = RootConfig
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +257,7 @@ def load_config(
     config_path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
     env_prefix: str = "FSOC_",
-) -> AppConfig_Root:
+) -> RootConfig:
     """Load configuration from a YAML file with optional overrides.
 
     Priority (highest wins):
@@ -273,7 +272,7 @@ def load_config(
         env_prefix: Prefix for environment variable lookups.
 
     Returns:
-        A fully validated ``AppConfig_Root`` instance.
+        A fully validated ``RootConfig`` instance.
 
     Raises:
         ConfigurationError: If the file is missing or contains invalid data.
@@ -286,7 +285,7 @@ def load_config(
         if not path.exists():
             raise ConfigurationError(f"Config file not found: {path}")
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 raw = yaml.safe_load(f) or {}
         except yaml.YAMLError as exc:
             raise ConfigurationError(f"Failed to parse YAML config: {exc}") from exc
@@ -297,7 +296,7 @@ def load_config(
 
     # 3. Build config (pydantic handles validation and defaults)
     try:
-        config = AppConfig_Root.model_validate(raw)
+        config = RootConfig.model_validate(raw)
     except Exception as exc:
         raise ConfigurationError(f"Configuration validation failed: {exc}") from exc
 

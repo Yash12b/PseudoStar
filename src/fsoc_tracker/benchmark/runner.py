@@ -45,17 +45,17 @@ from fsoc_tracker.benchmark.methods import (
     check_method_availability,
     load_method_components,
 )
+from fsoc_tracker.control.controller import CoarsePointingController
+from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
 from fsoc_tracker.pipeline.eval import EvalSink
 from fsoc_tracker.pipeline.pipeline import TrackingPipeline
-from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.control.controller import CoarsePointingController
 from fsoc_tracker.simulation.camera import VirtualCamera
 from fsoc_tracker.simulation.camera.state import CameraState
 from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.sensor import SensorConfig, VirtualSensorRenderer
 from fsoc_tracker.simulation.world import WorldConfig
-from fsoc_tracker.tracking.tracker import KalmanTracker
 from fsoc_tracker.tracking.config import AssociationMethod, TrackerConfig
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 
 class BenchmarkMode(str, Enum):
@@ -106,6 +106,9 @@ class BenchmarkRunConfig:
     disturbance_preset: str = "clear"
     assoc_gate_px: float | None = None
     assoc_method: str | None = None
+    assoc_appearance: float | None = None
+    assoc_identity: float | None = None
+    identity_code: str | None = None
     lead_compensation: bool = False
     lead_time_s: float | None = None
 
@@ -139,6 +142,7 @@ class BenchmarkMetrics:
     max_error_px: float = 0.0
     loss_rate_pct: float = 0.0
     reacquisition_s: float | None = None
+    reacquisition_from_reappearance_s: float | None = None
     lock_retention_pct: float = 0.0
     fov_retention_pct: float = 0.0
     search_duration_s: float = 0.0
@@ -176,6 +180,7 @@ class BenchmarkMetrics:
             "max_error_px": round(self.max_error_px, 2),
             "loss_rate_pct": round(self.loss_rate_pct, 1),
             "reacquisition_s": self.reacquisition_s,
+            "reacquisition_from_reappearance_s": self.reacquisition_from_reappearance_s,
             "lock_retention_pct": round(self.lock_retention_pct, 1),
             "fov_retention_pct": round(self.fov_retention_pct, 1),
             "search_duration_s": round(self.search_duration_s, 3),
@@ -216,6 +221,7 @@ class BenchmarkMetrics:
             ("P95 / Max", f"{self.p95_px:.2f} / {self.max_error_px:.2f} px"),
             ("Target loss", f"{self.loss_rate_pct:.1f}% ({self.target_losses} events)"),
             ("Reacquisition", fmt_acq(self.reacquisition_s)),
+            ("Reacq from reappearance", fmt_acq(self.reacquisition_from_reappearance_s)),
             ("Lock retention", f"{self.lock_retention_pct:.1f}%"),
             ("FOV retention", f"{self.fov_retention_pct:.1f}%"),
             ("Search duration", f"{self.search_duration_s:.3f}s"),
@@ -230,12 +236,29 @@ class BenchmarkMetrics:
 
 def build_repro_command(config: BenchmarkRunConfig) -> str:
     mode_value = config.mode.value if isinstance(config.mode, BenchmarkMode) else str(config.mode)
-    return (
+    cmd = (
         "python -m fsoc_tracker.cli.run_benchmark sim"
         f" --method {mode_value} --world {config.world_profile}"
         f" --seed {config.seed} --frames {config.max_frames}"
         f" --output {config.output_dir}"
     )
+    # Every tuning flag that changes results must round-trip here, or
+    # the recorded command silently reproduces different numbers.
+    if config.assoc_gate_px is not None:
+        cmd += f" --assoc-gate-px {config.assoc_gate_px}"
+    if config.assoc_method is not None:
+        cmd += f" --assoc-method {config.assoc_method}"
+    if config.assoc_appearance is not None:
+        cmd += f" --assoc-appearance {config.assoc_appearance}"
+    if config.assoc_identity is not None:
+        cmd += f" --assoc-identity {config.assoc_identity}"
+    if config.identity_code:
+        cmd += f" --identity-code {config.identity_code}"
+    if config.lead_compensation:
+        cmd += " --lead"
+    if config.lead_time_s is not None:
+        cmd += f" --lead-time {config.lead_time_s}"
+    return cmd
 
 
 class BenchmarkRunner:
@@ -376,6 +399,12 @@ class BenchmarkRunner:
                 if config.assoc_method is not None:
                     tracker_cfg.association_method = AssociationMethod(
                         config.assoc_method)
+                if config.assoc_appearance is not None:
+                    tracker_cfg.appearance_weight = float(config.assoc_appearance)
+                if config.assoc_identity is not None:
+                    tracker_cfg.identity_weight = float(config.assoc_identity)
+                if config.identity_code:
+                    tracker_cfg.identity_expected_code = str(config.identity_code)
                 tracker = KalmanTracker(tracker_cfg)
             controller = CoarsePointingController()
             if config.lead_compensation:
@@ -403,6 +432,8 @@ class BenchmarkRunner:
             errors: list[float] = []
             pred_errors: list[float] = []
             reacquisition_times: list[float] = []
+            reacquisition_from_reappearance: list[float] = []
+            reappear_s: float | None = None
             frame_times: list[float] = []
             fov_inside_count = 0
             fov_total_count = 0
@@ -425,6 +456,7 @@ class BenchmarkRunner:
             probe_id = 0
             sim_time = 0.0
             prev_proc_ms = 0.0
+            prev_platform = engine.get_terminal_a_state()
 
             for frame_idx in range(config.max_frames):
                 if self._stop_requested:
@@ -433,11 +465,24 @@ class BenchmarkRunner:
                 t_start = time.perf_counter()
 
                 engine.step(config.sim_dt)
+                # Strapdown carry (Terminal A itself moves): the mount
+                # rides the platform; gimbal commands operate on top.
+                try:
+                    from fsoc_tracker.simulation.platform import (
+                        apply_platform_delta_to_camera,
+                    )
+                    cur_platform = engine.get_terminal_a_state()
+                    apply_platform_delta_to_camera(
+                        camera.state, prev_platform, cur_platform)
+                    prev_platform = cur_platform
+                except Exception:
+                    pass
                 active_targets = engine.get_state().get_active_targets()
                 render_camera = camera
                 disturbance_context = None
                 if disturbance is not None and disturbance.config.enabled:
                     from dataclasses import replace
+
                     from fsoc_tracker.disturbances.context import (
                         CameraPoseContext,
                         DisturbanceContext,
@@ -494,10 +539,12 @@ class BenchmarkRunner:
                         roi_offset = (x1, y1)
                         roi_frames += 1
                 det_result = detector.detect(detect_image, sim_time, frame_idx)
+                if roi_offset != (0, 0) and det_result.detections:
+                    ox, oy = roi_offset
+                    for cand in det_result.detections:
+                        cand.center_x += ox
+                        cand.center_y += oy
                 primary = det_result.primary_detection
-                if primary is not None and roi_offset != (0, 0):
-                    primary.center_x += roi_offset[0]
-                    primary.center_y += roi_offset[1]
                 detected = bool(primary and primary.detected)
                 if detected:
                     last_detect_s = sim_time
@@ -507,7 +554,10 @@ class BenchmarkRunner:
                 locked = False
                 if use_kalman:
                     assert tracker is not None
-                    detections = [primary] if detected else []
+                    # Full list (mirrors pipeline.py): the tracker itself
+                    # splits above-threshold association from the rescue
+                    # pass; feeding only the primary hid all competition.
+                    detections = list(det_result.detections)
                     trk = tracker.update(detections, sim_time)
                     est_x, est_y = trk.estimated_x, trk.estimated_y
                     track_state_name = trk.state.name
@@ -693,11 +743,18 @@ class BenchmarkRunner:
                         acquisition_s = sim_time
                     if loss_start_s is not None:
                         reacquisition_times.append(sim_time - loss_start_s)
+                        if reappear_s is not None:
+                            reacquisition_from_reappearance.append(
+                                sim_time - reappear_s)
                         loss_start_s = None
+                        reappear_s = None
                 else:
                     if was_locked and loss_start_s is None:
                         loss_count += 1
                         loss_start_s = sim_time
+                        reappear_s = None
+                    if loss_start_s is not None and reappear_s is None and gt_visible:
+                        reappear_s = sim_time
                 was_locked = locked
 
                 # --- Optical link + comm (SIM geometry; scoring/model use) ---
@@ -778,6 +835,10 @@ class BenchmarkRunner:
             metrics.acquisition_s = acquisition_s
             metrics.reacquisition_s = (
                 float(np.mean(reacquisition_times)) if reacquisition_times else None
+            )
+            metrics.reacquisition_from_reappearance_s = (
+                float(np.mean(reacquisition_from_reappearance))
+                if reacquisition_from_reappearance else None
             )
             metrics.search_duration_s = search_time_s
             metrics.fov_retention_pct = (
@@ -937,6 +998,8 @@ class BenchmarkRunner:
             errors: list[float] = []
             pred_errors: list[float] = []
             reacquisition_times: list[float] = []
+            reacquisition_from_reappearance: list[float] = []
+            reappear_s: float | None = None
             frame_times: list[float] = []
             fov_inside_count = 0
             fov_total_count = 0
@@ -1016,11 +1079,19 @@ class BenchmarkRunner:
                             acquisition_s = t_result
                         if loss_start_s is not None:
                             reacquisition_times.append(t_result - loss_start_s)
+                            if reappear_s is not None:
+                                reacquisition_from_reappearance.append(
+                                    t_result - reappear_s)
                             loss_start_s = None
+                            reappear_s = None
                     else:
                         if was_locked and loss_start_s is None:
                             loss_count += 1
                             loss_start_s = t_result
+                            reappear_s = None
+                        if (loss_start_s is not None and reappear_s is None
+                                and gt_visible):
+                            reappear_s = t_result
                     was_locked = locked
 
                     world_targets = engine.get_state().get_active_targets()
@@ -1100,6 +1171,10 @@ class BenchmarkRunner:
             metrics.acquisition_s = acquisition_s
             metrics.reacquisition_s = (
                 float(np.mean(reacquisition_times)) if reacquisition_times else None
+            )
+            metrics.reacquisition_from_reappearance_s = (
+                float(np.mean(reacquisition_from_reappearance))
+                if reacquisition_from_reappearance else None
             )
             metrics.search_duration_s = search_time_s
             metrics.fov_retention_pct = (

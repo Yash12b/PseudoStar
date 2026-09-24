@@ -40,6 +40,13 @@ class TerminalConfig:
     vfov_deg: float = 3.0
     max_pan_speed_deg_s: float = 5.0
     max_tilt_speed_deg_s: float = 5.0
+    # Platform motion (Terminal A itself moves, e.g. two satellites):
+    # "static" (default, today's behavior) or "drift" (constant
+    # velocity + constant attitude rates, stepped by the engine).
+    # platform_motion_params keys: vx, vy, vz (world units/s),
+    # yaw_rate_deg_s, pitch_rate_deg_s, roll_rate_deg_s.
+    platform_motion: str = "static"
+    platform_motion_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +77,13 @@ class BeaconConfig:
     seed: int = 42
     size_px: float = 10.0
     brightness: float = 1.0
+    # Beacon spot shape: "square" (PS default), "circular", or "spot"
+    # (soft Gaussian). Rendered per target by the sensor renderer.
+    shape: str = "square"
+    # Temporal identity code (binary string, e.g. "10110010"): brightness
+    # is multiplied by the code bit each frame. "" = steady ON (default,
+    # today's behavior). Distinct codes let the tracker reject decoys.
+    code: str = ""
     is_primary: bool = False
     active: bool = True
 

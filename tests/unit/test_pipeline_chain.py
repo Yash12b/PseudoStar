@@ -13,15 +13,14 @@ Verifies:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from fsoc_tracker.perception.centroid import compute_centroid
 from fsoc_tracker.perception.classical import detect_beacon
 from fsoc_tracker.perception.config import PerceptionConfig, ThresholdMode
 from fsoc_tracker.perception.models import BeaconDetection, PerceptionStatus
 from fsoc_tracker.tracking.config import TrackerConfig
-from fsoc_tracker.tracking.tracker import KalmanTracker
 from fsoc_tracker.tracking.state import TrackState
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 
 def _make_config(**kw) -> PerceptionConfig:
@@ -355,3 +354,120 @@ class TestDetectionAge:
             tracker.update([], 0.033 * (i + 1))
         state = tracker.update([_det(110, 60, ts=0.5)], 0.5)
         assert state.detection_age_s < 0.01
+
+
+class TestStaticClutterSuppression:
+    """Pipeline drops overlay-static candidates on video sources only."""
+
+    def _pipe(self, source=None):
+        from fsoc_tracker.pipeline.pipeline import TrackingPipeline
+        from fsoc_tracker.pipeline.sources import VideoSource
+        pipe = TrackingPipeline(
+            perception=__import__(
+                "fsoc_tracker.perception.classical_engine",
+                fromlist=["ClassicalBeaconDetector"]).ClassicalBeaconDetector(
+                    config=PerceptionConfig.for_video()),
+            tracker=KalmanTracker(),
+        )
+        pipe._source = VideoSource("/nonexistent.mp4") if source == "video" else source
+        return pipe
+
+    def _frame_with_dot(self, x, y, size=5, peak=230):
+        img = np.full((240, 320), 5, dtype=np.uint8)
+        yy, xx = np.ogrid[:240, :320]
+        img[(xx - x) ** 2 + (yy - y) ** 2 <= (size // 2) ** 2] = peak
+        return img
+
+    def _run_frames(self, pipe, positions):
+        from fsoc_tracker.perception.classical import detect_beacon
+        out = []
+        for i, (x, y) in enumerate(positions):
+            res = detect_beacon(self._frame_with_dot(x, y),
+                                PerceptionConfig.for_video(), 0.0, i)
+            out.append(pipe._suppress_static_clutter(res))
+        return out
+
+    def test_static_dot_dropped_after_history(self):
+        pipe = self._pipe(source="video")
+        results = self._run_frames(pipe, [(160, 120)] * 14)
+        assert results[0].status == PerceptionStatus.DETECTED
+        assert results[-1].status == PerceptionStatus.NO_TARGET
+        assert results[-1].diagnostics.get("static_suppressed", 0) >= 1
+
+    def test_moving_dot_survives(self):
+        pipe = self._pipe(source="video")
+        results = self._run_frames(
+            pipe, [(100 + 5 * i, 120) for i in range(14)])
+        assert all(r.status == PerceptionStatus.DETECTED for r in results[6:])
+        assert all(len(r.detections) >= 1 for r in results[6:])
+
+    def test_non_video_source_bypasses(self):
+        pipe = self._pipe(source=None)
+        results = self._run_frames(pipe, [(160, 120)] * 14)
+        assert all(r.status == PerceptionStatus.DETECTED for r in results)
+
+    def test_history_reset_on_new_source(self):
+        pipe = self._pipe(source="video")
+        self._run_frames(pipe, [(160, 120)] * 14)
+        assert len(pipe._static_hist) == 11
+        from fsoc_tracker.pipeline.sources import VideoSource
+        pipe.set_source(VideoSource("/other.mp4"))
+        assert pipe._static_hist == []
+
+
+class TestTrackerAblation:
+    """Runtime Kalman bypass (raw-detection tracking)."""
+
+    def _pipe(self):
+        import sys
+        sys.path.insert(0, "src")
+        from fsoc_tracker.control.controller import CoarsePointingController
+        from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+        from fsoc_tracker.perception.config import PerceptionConfig
+        from fsoc_tracker.pipeline.pipeline import TrackingPipeline
+        from fsoc_tracker.tracking.tracker import KalmanTracker
+        return TrackingPipeline(
+            perception=ClassicalBeaconDetector(config=PerceptionConfig()),
+            tracker=KalmanTracker(), controller=CoarsePointingController())
+
+    def _frame(self, x, y):
+        import numpy as np
+
+        from fsoc_tracker.core.models import ColorModel, Frame
+        img = np.full((240, 320), 5, dtype=np.uint8)
+        yy, xx = np.ogrid[:240, :320]
+        img[(xx - x) ** 2 + (yy - y) ** 2 <= 25] = 230
+        return Frame(image=img, width=320, height=240, channels=1,
+                     color_model=ColorModel.GRAY, source_id="t",
+                     source_type="sim", frame_index=0, timestamp_s=0.0)
+
+    def test_raw_mode_mirrors_detection(self):
+        pipe = self._pipe()
+        pipe.set_tracker_enabled(False)
+        res = pipe.process_frame(self._frame(160, 120))
+        assert res.perception.detected
+        assert res.tracking.state.name == "TRACKING"
+        assert res.tracking.locked is True
+        assert abs(res.tracking.estimated_x - 160) < 3.0
+        assert abs(res.tracking.estimated_y - 120) < 3.0
+
+    def test_raw_mode_miss_is_lost(self):
+        import numpy as np
+
+        from fsoc_tracker.core.models import ColorModel, Frame
+        pipe = self._pipe()
+        pipe.set_tracker_enabled(False)
+        img = np.full((240, 320), 5, dtype=np.uint8)
+        res = pipe.process_frame(Frame(
+            image=img, width=320, height=240, channels=1,
+            color_model=ColorModel.GRAY, source_id="t",
+            source_type="sim", frame_index=0, timestamp_s=0.0))
+        assert res.tracking.state.name == "LOST"
+        assert res.tracking.locked is False
+
+    def test_reenable_resets_kalman(self):
+        pipe = self._pipe()
+        pipe.set_tracker_enabled(False)
+        pipe.process_frame(self._frame(160, 120))
+        pipe.set_tracker_enabled(True)
+        assert pipe._use_kalman_tracker is True

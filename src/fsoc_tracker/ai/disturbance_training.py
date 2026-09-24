@@ -21,12 +21,11 @@ import random
 import time
 from pathlib import Path
 
-
 try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import DataLoader, Dataset
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False

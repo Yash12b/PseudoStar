@@ -3,18 +3,18 @@
 from fsoc_tracker.core.exceptions import (
     ConfigurationError,
     ControlError,
-    FSOCTrackerError,
     FrameSourceError,
+    FSOCTrackerError,
     PerceptionError,
     SimulationError,
     TrackingError,
 )
+from fsoc_tracker.core.interfaces import FrameSource
 from fsoc_tracker.core.models import (
     ColorModel,
     Frame,
     TargetState,
 )
-from fsoc_tracker.core.interfaces import FrameSource
 
 __all__ = [
     "ColorModel",

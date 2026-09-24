@@ -49,8 +49,8 @@ from fsoc_tracker.simulation.engine import SimulationEngine
 from fsoc_tracker.simulation.optical_link import OpticalLinkEngine
 from fsoc_tracker.simulation.sensor.config import SensorConfig
 from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-from fsoc_tracker.simulation.terminal import TerminalState
 from fsoc_tracker.simulation.target import WorldTargetState
+from fsoc_tracker.simulation.terminal import TerminalState
 from fsoc_tracker.simulation.world import WorldConfig
 from fsoc_tracker.tracking.search import SearchConfig, SearchController
 from fsoc_tracker.tracking.tracker import KalmanTracker

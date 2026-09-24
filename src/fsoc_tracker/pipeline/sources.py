@@ -59,9 +59,14 @@ class VirtualSimulationSource(FrameSource):
         self._sim_time: float = 0.0
         self._opened = False
         self._eval_sink = eval_sink
+        # Strapdown carry: previous engine platform pose, so per-frame
+        # platform motion (Terminal A itself moving) shifts/turns the
+        # camera before rendering. None until open() baselines it.
+        self._prev_platform: Any | None = None
 
     def open(self) -> None:
         self._opened = True
+        self.sync_platform_baseline()
 
     def is_open(self) -> bool:
         return self._opened
@@ -75,6 +80,7 @@ class VirtualSimulationSource(FrameSource):
             return None
 
         self._engine.step(self._dt)
+        self._carry_platform()
         world_state = self._engine.get_state()
         targets = world_state.get_active_targets()
 
@@ -164,6 +170,39 @@ class VirtualSimulationSource(FrameSource):
         self._sim_time += self._dt
         self._frame_index += 1
         return frame
+
+    def sync_platform_baseline(self) -> None:
+        """Re-baseline strapdown carry (call after manual placement).
+
+        Manual place-terminal actions teleport the platform AND the
+        camera together; without re-baselining, the next frame would
+        apply the teleport as a motion delta a second time.
+        """
+        try:
+            self._prev_platform = self._engine.get_terminal_a_state()
+        except Exception:
+            self._prev_platform = None
+
+    def _carry_platform(self) -> None:
+        """Move the mount with its platform (strapdown, in place)."""
+        if self._camera is None:
+            return
+        try:
+            cur = self._engine.get_terminal_a_state()
+        except Exception:
+            return
+        if self._prev_platform is None:
+            self._prev_platform = cur
+            return
+        try:
+            from fsoc_tracker.simulation.platform import (
+                apply_platform_delta_to_camera,
+            )
+            apply_platform_delta_to_camera(
+                self._camera.state, self._prev_platform, cur)
+        except Exception:
+            pass
+        self._prev_platform = cur
 
     def release(self) -> None:
         self._opened = False
@@ -300,6 +339,32 @@ class VideoSource(FrameSource):
             self._last_timestamp_s = -1.0
             return True
         return False
+
+    @property
+    def position_frames(self) -> int | None:
+        """Decoder's current frame position, or None when unavailable."""
+        if self._cap is None:
+            return None
+        try:
+            import cv2
+            return int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+        except Exception:
+            return None
+
+    def reopen_and_seek(self, frame_index: int) -> bool:
+        """Recover a stalled decoder: re-open the file and seek.
+
+        OpenCV's ffmpeg backend goes sticky-EOF after a damaged packet:
+        ``read()`` returns ``None`` forever even though later frames are
+        perfectly decodable. Re-opening and seeking past the damage
+        resumes the stream. Returns True when the seek landed.
+        """
+        try:
+            self.release()
+            self.open()
+        except Exception:
+            return False
+        return self.seek(int(frame_index))
 
     def release(self) -> None:
         if self._cap is not None:
@@ -802,6 +867,26 @@ class EquirectangularFrameSource(FrameSource):
 
     def seek(self, frame_index: int) -> bool:
         return self._source.seek(frame_index)
+
+    @property
+    def position_frames(self) -> int | None:
+        """Decoder position of the wrapped video source, if known."""
+        getter = getattr(self._source, "position_frames", None)
+        try:
+            return int(getter()) if callable(getter) else (
+                int(getter) if getter is not None else None)
+        except Exception:
+            return None
+
+    def reopen_and_seek(self, frame_index: int) -> bool:
+        """Recover a stalled decoder via the wrapped video source."""
+        inner = getattr(self._source, "reopen_and_seek", None)
+        if not callable(inner):
+            return False
+        ok = bool(inner(int(frame_index)))
+        if ok:
+            self._opened = True
+        return ok
 
     @property
     def is_equirectangular(self) -> bool:

@@ -25,21 +25,20 @@ from fsoc_tracker.ai.mission import (
     Situation,
     SituationClassifier,
 )
+from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.core.time import compute_dt
-from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-from fsoc_tracker.perception.config import PerceptionConfig
-from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.tracking.state import TrackingState, TrackState
-from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
-from fsoc_tracker.simulation.engine import SimulationEngine
-from fsoc_tracker.simulation.world import WorldConfig
-from fsoc_tracker.simulation.camera.camera import VirtualCamera
-from fsoc_tracker.simulation.camera.state import CameraState
-from fsoc_tracker.simulation.sensor.config import SensorConfig
-from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
 from fsoc_tracker.disturbances.config import get_preset_config
 from fsoc_tracker.disturbances.pipeline import DisturbancePipeline
-
+from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+from fsoc_tracker.perception.config import PerceptionConfig
+from fsoc_tracker.simulation.camera.camera import VirtualCamera
+from fsoc_tracker.simulation.camera.state import CameraState
+from fsoc_tracker.simulation.engine import SimulationEngine
+from fsoc_tracker.simulation.sensor.config import SensorConfig
+from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+from fsoc_tracker.simulation.world import WorldConfig
+from fsoc_tracker.tracking.state import TrackingState, TrackState
+from fsoc_tracker.tracking.tracker import KalmanTracker
 
 HORIZONS_S: list[float] = [0.025, 0.05, 0.1, 0.25, 0.5]
 FEATURE_DIM = 15
@@ -413,7 +412,7 @@ def generate_temporal_dataset(
     for traj_type, variants in TRAJECTORY_CONFIGS.items():
         for variant_name, params in variants.items():
             for dist in DISTURBANCE_PROFILES:
-                for i in range(sequences_per_config):
+                for _ in range(sequences_per_config):
                     seq_seed = int(rng.integers(0, 1_000_000))
                     params_copy = dict(params)
                     if traj_type == "random" and "seed" in params_copy:
@@ -434,7 +433,7 @@ def generate_temporal_dataset(
     hard_test_configs: list[tuple[str, str, str, int]] = []
     for traj_type in ["straight_line", "circular", "sinusoidal"]:
         for dist in ["light"]:
-            for i in range(sequences_per_config):
+            for _ in range(sequences_per_config):
                 seq_seed = int(rng.integers(0, 1_000_000))
                 hard_test_configs.append((traj_type, "fast", dist, seq_seed))
 

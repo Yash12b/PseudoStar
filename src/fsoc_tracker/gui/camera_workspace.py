@@ -21,20 +21,30 @@ from fsoc_tracker.gui.state import ApplicationViewState
 from fsoc_tracker.gui.theme import Colors
 
 try:
-    from PySide6.QtCore import Qt, QPointF
+    from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import (
-        QImage, QPixmap, QPainter, QPen, QColor,
+        QColor,
+        QImage,
+        QPainter,
+        QPen,
+        QPixmap,
     )
     from PySide6.QtWidgets import (
-        QLabel, QVBoxLayout, QFrame, QGridLayout,
+        QFrame,
+        QGridLayout,
+        QLabel,
         QSizePolicy,
+        QVBoxLayout,
     )
 except ImportError:
-    from PyQt5.QtCore import Qt, QPointF  # type: ignore
-    from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor  # type: ignore
+    from PyQt5.QtCore import QPointF, Qt  # type: ignore
+    from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap  # type: ignore
     from PyQt5.QtWidgets import (
-        QLabel, QVBoxLayout, QFrame, QGridLayout,  # type: ignore
+        QFrame,
+        QGridLayout,
+        QLabel,  # type: ignore
         QSizePolicy,  # type: ignore
+        QVBoxLayout,
     )
 
 
@@ -126,10 +136,182 @@ class CameraTrackingWorkspace(QFrame):
 
         pixmap = QPixmap.fromImage(qimg)
         scaled = pixmap.scaled(self._image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self._current_pixmap = scaled
-        self._image_label.setPixmap(scaled)
+        # Compose video + overlays onto a single pixmap. Overlays MUST be
+        # baked into the displayed pixmap: anything painted in paintEvent
+        # on the parent frame is covered by the image QLabel child.
+        composed = self._compose_overlays(scaled)
+        self._current_pixmap = composed
+        self._image_label.setPixmap(composed)
         self._update_telemetry()
         self.update()
+
+    def _compose_overlays(self, scaled: QPixmap) -> QPixmap:
+        """Paint the video frame plus all HUD overlays onto one pixmap.
+
+        The scaled frame is letterboxed onto a label-sized canvas; overlay
+        coordinates map image pixels through the same scale + offset.
+        """
+        s = self._state
+        lw = max(self._image_label.width(), 1)
+        lh = max(self._image_label.height(), 1)
+        canvas = QPixmap(lw, lh)
+        canvas.fill(QColor("#050a0f"))
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        img_w = max(s.camera.image_width, 1) if s is not None else scaled.width()
+        img_h = max(s.camera.image_height, 1) if s is not None else scaled.height()
+        scale = min(lw / img_w, lh / img_h)
+        dw, dh = img_w * scale, img_h * scale
+        ox, oy = (lw - dw) / 2.0, (lh - dh) / 2.0
+        painter.drawPixmap(int(ox), int(oy), scaled)
+
+        def ix(x: float) -> int:
+            return int(ox + x * scale)
+
+        def iy(y: float) -> int:
+            return int(oy + y * scale)
+
+        if s is not None:
+            cx, cy = lw // 2, lh // 2
+
+            # --- Camera center crosshair ---
+            pen_ch = QPen(QColor(Colors.CROSSHAIR), 1, Qt.DashLine)
+            painter.setPen(pen_ch)
+            painter.drawLine(cx - 20, cy, cx + 20, cy)
+            painter.drawLine(cx, cy - 20, cx, cy + 20)
+
+            # --- FOV boundary ---
+            pen_fov = QPen(QColor(Colors.CENTERLINE), 1, Qt.DotLine)
+            painter.setPen(pen_fov)
+            painter.drawRect(4, 4, lw - 8, lh - 8)
+
+            # --- Tracking reticle (square brackets + center +) ---
+            reticle_active = (s.tracking.locked
+                              or s.tracking.state in ("TRACKING", "ACQUIRING")
+                              or s.perception.detected)
+            if reticle_active:
+                if s.tracking.locked or s.tracking.state in ("TRACKING", "ACQUIRING"):
+                    rx, ry = ix(s.tracking.estimated_x), iy(s.tracking.estimated_y)
+                else:
+                    rx, ry = ix(s.perception.detection_x), iy(s.perception.detection_y)
+
+                gate_half = max(int(s.target.size_px * scale * 0.8), 12)
+
+                if s.tracking.locked:
+                    reticle_color = QColor(Colors.SUCCESS)
+                elif s.tracking.state in ("TRACKING", "ACQUIRING"):
+                    reticle_color = QColor(Colors.TARGET)
+                elif s.perception.detected:
+                    reticle_color = QColor(Colors.WARNING)
+                else:
+                    reticle_color = QColor(Colors.ERROR)
+
+                pen_ret = QPen(reticle_color, 2)
+                painter.setPen(pen_ret)
+                painter.setBrush(QColor(0, 0, 0, 0))
+
+                bl = max(gate_half // 3, 6)
+                painter.drawLine(rx - gate_half, ry - gate_half,
+                                 rx - gate_half + bl, ry - gate_half)
+                painter.drawLine(rx - gate_half, ry - gate_half,
+                                 rx - gate_half, ry - gate_half + bl)
+                painter.drawLine(rx + gate_half, ry - gate_half,
+                                 rx + gate_half - bl, ry - gate_half)
+                painter.drawLine(rx + gate_half, ry - gate_half,
+                                 rx + gate_half, ry - gate_half + bl)
+                painter.drawLine(rx - gate_half, ry + gate_half,
+                                 rx - gate_half + bl, ry + gate_half)
+                painter.drawLine(rx - gate_half, ry + gate_half,
+                                 rx - gate_half, ry + gate_half - bl)
+                painter.drawLine(rx + gate_half, ry + gate_half,
+                                 rx + gate_half - bl, ry + gate_half)
+                painter.drawLine(rx + gate_half, ry + gate_half,
+                                 rx + gate_half, ry + gate_half - bl)
+
+                ch_len = max(gate_half // 2, 5)
+                painter.setPen(QPen(reticle_color, 1))
+                painter.drawLine(rx - ch_len, ry, rx + ch_len, ry)
+                painter.drawLine(rx, ry - ch_len, rx, ry + ch_len)
+
+                painter.setBrush(reticle_color)
+                painter.drawEllipse(QPointF(rx, ry), 2, 2)
+
+                if s.tracking.locked or s.tracking.state in ("TRACKING", "ACQUIRING"):
+                    unc_r = max(int(s.tracking.uncertainty_x * scale), 3)
+                    painter.setPen(QPen(reticle_color, 1, Qt.DotLine))
+                    painter.setBrush(QColor(0, 0, 0, 0))
+                    painter.drawEllipse(QPointF(rx, ry), unc_r, unc_r)
+
+            # --- Prediction marker (AI motion forecast) ---
+            pred_dx = float(s.ai_state.prediction_dx)
+            pred_dy = float(s.ai_state.prediction_dy)
+            if s.tracking.state in ("TRACKING", "ACQUIRING") and (pred_dx != 0.0 or pred_dy != 0.0):
+                est_x = float(s.tracking.estimated_x)
+                est_y = float(s.tracking.estimated_y)
+                pred_x, pred_y = ix(est_x + pred_dx), iy(est_y + pred_dy)
+                base_x, base_y = ix(est_x), iy(est_y)
+
+                painter.setPen(QPen(QColor(Colors.PREDICTED), 1, Qt.DashLine))
+                painter.setBrush(QColor(0, 0, 0, 0))
+                painter.drawLine(base_x, base_y, pred_x, pred_y)
+
+                d = 5
+                painter.setPen(QPen(QColor(Colors.PREDICTED), 2))
+                painter.drawLine(pred_x - d, pred_y, pred_x, pred_y - d)
+                painter.drawLine(pred_x, pred_y - d, pred_x + d, pred_y)
+                painter.drawLine(pred_x + d, pred_y, pred_x, pred_y + d)
+                painter.drawLine(pred_x, pred_y + d, pred_x - d, pred_y)
+
+                pred_unc = math.sqrt(
+                    float(s.ai_state.prediction_uncertainty_x) ** 2
+                    + float(s.ai_state.prediction_uncertainty_y) ** 2
+                )
+                if pred_unc > 0.0:
+                    painter.setPen(QPen(QColor(Colors.PREDICTED), 1, Qt.DotLine))
+                    painter.drawEllipse(
+                        QPointF(pred_x, pred_y),
+                        max(int(pred_unc * scale), 2), max(int(pred_unc * scale), 2),
+                    )
+
+                painter.setPen(QPen(QColor(Colors.PREDICTED), 1))
+                tag_font = painter.font()
+                tag_font.setPointSize(8)
+                tag_font.setBold(False)
+                painter.setFont(tag_font)
+                painter.drawText(
+                    pred_x + 8, pred_y - 6,
+                    f"PRED +{float(s.ai_state.prediction_horizon_s):.2f}s",
+                )
+
+            # --- Tracking state text overlay ---
+            state_text = f"TRK: {s.tracking.state}"
+            if s.tracking.locked:
+                state_text += " | LOCKED"
+            painter.setPen(QPen(QColor(Colors.ACCENT), 1))
+            font = painter.font()
+            font.setPointSize(10)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(8, 20, state_text)
+
+            # --- Mode indicator ---
+            mode_text = f"SRC: {s.system_mode.value.upper()}"
+            painter.setPen(QPen(QColor(Colors.MUTED), 1))
+            font.setPointSize(9)
+            font.setBold(False)
+            painter.setFont(font)
+            painter.drawText(8, 38, mode_text)
+
+            # --- Distance status (for LIVE mode) ---
+            if s.system_mode.value.upper() == "LIVE":
+                distance_status = s.live_distance_status if hasattr(s, 'live_distance_status') else "UNAVAILABLE"
+                distance_text = f"DIST: {distance_status}"
+                painter.setPen(QPen(QColor(Colors.WARNING) if distance_status == "UNAVAILABLE" else Colors.SUCCESS, 1))
+                painter.drawText(8, 56, distance_text)
+
+        painter.end()
+        return canvas
 
     def _update_telemetry(self) -> None:
         """Update the telemetry labels with real values."""
@@ -209,145 +391,10 @@ class CameraTrackingWorkspace(QFrame):
         set_t("LATENCY", f"{s.performance.processing_ms:.1f}ms", lat_color)
 
     def paintEvent(self, event) -> None:
+        # All overlays are baked into the displayed pixmap by
+        # _compose_overlays (anything painted here on the parent frame
+        # would be covered by the image QLabel child).
         super().paintEvent(event)
-        if self._state is None or self._current_pixmap is None:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # Compute image label geometry
-        px = self._image_label.x()
-        py = self._image_label.y()
-        pw = self._image_label.width()
-        ph = self._image_label.height()
-        cx = px + pw // 2
-        cy = py + ph // 2
-
-        s = self._state
-        img_w = max(s.camera.image_width, 1)
-        img_h = max(s.camera.image_height, 1)
-        sx = pw / img_w
-        sy = ph / img_h
-
-        # --- Camera center crosshair ---
-        pen_ch = QPen(QColor(Colors.CROSSHAIR), 1, Qt.DashLine)
-        painter.setPen(pen_ch)
-        painter.drawLine(cx - 20, cy, cx + 20, cy)
-        painter.drawLine(cx, cy - 20, cx, cy + 20)
-
-        # --- FOV boundary (diamond at image edges) ---
-        pen_fov = QPen(QColor(Colors.CENTERLINE), 1, Qt.DotLine)
-        painter.setPen(pen_fov)
-        margin = 4
-        painter.drawRect(px + margin, py + margin, pw - 2 * margin, ph - 2 * margin)
-
-        # --- Target overlay (detection) ---
-        if s.perception.detected:
-            det_x = int(px + s.perception.detection_x * sx)
-            det_y = int(py + s.perception.detection_y * sy)
-            box_half = int(s.target.size_px * sx * 0.7)
-
-            # Bounding box
-            pen_det = QPen(QColor(Colors.TARGET), 2)
-            painter.setPen(pen_det)
-            painter.setBrush(QColor(0, 0, 0, 0))
-            painter.drawRect(det_x - box_half, det_y - box_half, box_half * 2, box_half * 2)
-
-            # Centroid dot
-            painter.setBrush(QColor(Colors.TARGET))
-            painter.drawEllipse(QPointF(det_x, det_y), 4, 4)
-
-        # --- Tracking estimate (Kalman) ---
-        if s.tracking.locked or s.tracking.state in ("TRACKING", "ACQUIRING"):
-            trk_x = int(px + s.tracking.estimated_x * sx)
-            trk_y = int(py + s.tracking.estimated_y * sy)
-
-            # Crosshair
-            pen_trk = QPen(QColor(Colors.SUCCESS), 2, Qt.DashDotLine)
-            painter.setPen(pen_trk)
-            painter.setBrush(QColor(0, 0, 0, 0))
-            painter.drawLine(trk_x - 10, trk_y, trk_x + 10, trk_y)
-            painter.drawLine(trk_x, trk_y - 10, trk_x, trk_y + 10)
-
-            # Uncertainty circle
-            unc_r = max(int(s.tracking.uncertainty_x * sx), 3)
-            painter.setPen(QPen(QColor(Colors.SUCCESS), 1, Qt.DotLine))
-            painter.drawEllipse(QPointF(trk_x, trk_y), unc_r, unc_r)
-
-        # --- Prediction marker (AI motion forecast from runtime state) ---
-        pred_dx = float(s.ai_state.prediction_dx)
-        pred_dy = float(s.ai_state.prediction_dy)
-        if s.tracking.state in ("TRACKING", "ACQUIRING") and (pred_dx != 0.0 or pred_dy != 0.0):
-            est_x = float(s.tracking.estimated_x)
-            est_y = float(s.tracking.estimated_y)
-            pred_x = int(px + (est_x + pred_dx) * sx)
-            pred_y = int(py + (est_y + pred_dy) * sy)
-            base_x = int(px + est_x * sx)
-            base_y = int(py + est_y * sy)
-
-            # Dashed connector: current estimate -> predicted position
-            painter.setPen(QPen(QColor(Colors.PREDICTED), 1, Qt.DashLine))
-            painter.setBrush(QColor(0, 0, 0, 0))
-            painter.drawLine(base_x, base_y, pred_x, pred_y)
-
-            # Diamond marker at the predicted position
-            d = 5
-            painter.setPen(QPen(QColor(Colors.PREDICTED), 2))
-            painter.drawLine(pred_x - d, pred_y, pred_x, pred_y - d)
-            painter.drawLine(pred_x, pred_y - d, pred_x + d, pred_y)
-            painter.drawLine(pred_x + d, pred_y, pred_x, pred_y + d)
-            painter.drawLine(pred_x, pred_y + d, pred_x - d, pred_y)
-
-            # Prediction uncertainty circle
-            pred_unc = math.sqrt(
-                float(s.ai_state.prediction_uncertainty_x) ** 2
-                + float(s.ai_state.prediction_uncertainty_y) ** 2
-            )
-            if pred_unc > 0.0:
-                painter.setPen(QPen(QColor(Colors.PREDICTED), 1, Qt.DotLine))
-                painter.drawEllipse(
-                    QPointF(pred_x, pred_y),
-                    max(int(pred_unc * sx), 2), max(int(pred_unc * sy), 2),
-                )
-
-            # Horizon tag (value straight from runtime state)
-            painter.setPen(QPen(QColor(Colors.PREDICTED), 1))
-            tag_font = painter.font()
-            tag_font.setPointSize(8)
-            tag_font.setBold(False)
-            painter.setFont(tag_font)
-            painter.drawText(
-                pred_x + 8, pred_y - 6,
-                f"PRED +{float(s.ai_state.prediction_horizon_s):.2f}s",
-            )
-
-        # --- Tracking state text overlay ---
-        state_text = f"TRK: {s.tracking.state}"
-        if s.tracking.locked:
-            state_text += " | LOCKED"
-        painter.setPen(QPen(QColor(Colors.ACCENT), 1))
-        font = painter.font()
-        font.setPointSize(10)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(px + 8, py + 20, state_text)
-
-        # --- Mode indicator ---
-        mode_text = f"SRC: {s.system_mode.value.upper()}"
-        painter.setPen(QPen(QColor(Colors.MUTED), 1))
-        font.setPointSize(9)
-        font.setBold(False)
-        painter.setFont(font)
-        painter.drawText(px + 8, py + 38, mode_text)
-
-        # --- Distance status (for LIVE mode) ---
-        if s.system_mode.value.upper() == "LIVE":
-            distance_status = s.live_distance_status if hasattr(s, 'live_distance_status') else "UNAVAILABLE"
-            distance_text = f"DIST: {distance_status}"
-            painter.setPen(QPen(QColor(Colors.WARNING) if distance_status == "UNAVAILABLE" else Colors.SUCCESS, 1))
-            painter.drawText(px + 8, py + 56, distance_text)
-
-        painter.end()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

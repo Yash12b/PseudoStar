@@ -255,8 +255,9 @@ def generate_sample(
             dist_config.enabled = True
             dist_config.noise = NoiseConfig(
                 enabled=True,
-                gaussian_sigma=rng.uniform(0, 15),
-                salt_pepper_density=rng.uniform(0, 0.1),
+                gaussian_sigma=rng.uniform(0, config.noise_sigma_max),
+                salt_pepper_density=rng.uniform(0, config.salt_pepper_max),
+                poisson_enabled=rng.random() < config.poisson_prob,
             )
             disturbance_types.append("noise")
 

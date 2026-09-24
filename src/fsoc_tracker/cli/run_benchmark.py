@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
-from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+from fsoc_tracker.perception.config import PerceptionConfig
 from fsoc_tracker.pipeline.pipeline import TrackingPipeline
 from fsoc_tracker.pipeline.session import SessionController
 from fsoc_tracker.pipeline.sources import VideoSource
@@ -26,13 +26,20 @@ def run_video_benchmark(
     video_path: str,
     output_dir: str = "runs",
     verbose: bool = False,
+    backend: str = "classical",
 ) -> dict:
     """Run benchmark on an external video file."""
-    print(f"[BENCH] input={video_path}")
+    from fsoc_tracker.perception.backends import build_backend
+    print(f"[BENCH] input={video_path} backend={backend}")
 
     source = VideoSource(video_path)
+    detector, effective, _ = build_backend(
+        backend, PerceptionConfig.for_video())
+    print(f"[BENCH] perception backend in effect: {effective}")
     pipeline = TrackingPipeline(
-        perception=ClassicalBeaconDetector(),
+        # Video input gets video-tuned perception (same config family
+        # the GUI worker applies in VIDEO mode), not sim defaults.
+        perception=detector,
         tracker=KalmanTracker(),
         controller=CoarsePointingController(),
         actuator=CameraActuator(),
@@ -89,6 +96,9 @@ def run_sim_benchmark(
     seeds: list[int] | None = None,
     assoc_gate_px: float | None = None,
     assoc_method: str | None = None,
+    assoc_appearance: float | None = None,
+    assoc_identity: float | None = None,
+    identity_code: str | None = None,
     lead_compensation: bool = False,
     lead_time_s: float | None = None,
 ) -> dict:
@@ -126,7 +136,9 @@ def run_sim_benchmark(
         config = BenchmarkRunConfig(
             mode=mode, world_profile=world, seed=s, max_frames=frames,
             output_dir=output, assoc_gate_px=assoc_gate_px,
-            assoc_method=assoc_method, lead_compensation=lead_compensation,
+            assoc_method=assoc_method, assoc_appearance=assoc_appearance,
+            assoc_identity=assoc_identity, identity_code=identity_code,
+            lead_compensation=lead_compensation,
             lead_time_s=lead_time_s,
         )
         print(f"[BENCH] method={method} world={world} seed={s} frames={frames}")
@@ -234,7 +246,8 @@ def main() -> None:
                             "learned_temporal_learned_policy | full_ai_mission")
     p_sim.add_argument("--world", default="multi",
                        help="Generated benchmark world profile: nominal | "
-                            "multi | distractor | loss | noise | fog | jitter")
+                            "multi | distractor | coded | moving | loss | "
+                            "noise | fog | jitter | fast")
     p_sim.add_argument("--seed", type=int, default=42)
     p_sim.add_argument("--seeds", default=None,
                        help="Comma-separated seeds, e.g. '42,43,44' "
@@ -244,6 +257,15 @@ def main() -> None:
                        help="Tracker association gate in px (default: 80)")
     p_sim.add_argument("--assoc-method", default=None,
                        help="nearest_neighbor | mahalanobis (default: nearest)")
+    p_sim.add_argument("--assoc-appearance", type=float, default=None,
+                       help="Appearance term weight vs distractor hijack (default: 0 off)")
+    p_sim.add_argument("--assoc-identity", type=float, default=None,
+                       help="Coded-identity term weight vs code-mismatched "
+                            "decoys (default: 0 off; needs --identity-code)")
+    p_sim.add_argument("--identity-code", default=None,
+                       help="Operator-configured binary beacon code, e.g. "
+                            "'10110010' (coded world primary uses 10110010, "
+                            "decoys use the inverse)")
     p_sim.add_argument("--lead", action="store_true",
                        help="Enable lead-angle compensation (aim ahead "
                             "along velocity; experimental, off by default)")
@@ -256,7 +278,23 @@ def main() -> None:
     p_vid.add_argument("-i", "--input", required=True, help="Path to video file")
     p_vid.add_argument("-o", "--output", default="runs")
     p_vid.add_argument("-v", "--verbose", action="store_true")
+    p_vid.add_argument("--backend", default="classical",
+                       choices=["classical", "ai", "hybrid"])
+    p_verify = sub.add_parser(
+        "verify", help="Recompute a performance report from its raw CSV")
+    p_verify.add_argument("report", help="Path to performance_report.json")
     args = parser.parse_args()
+
+    if args.command == "verify":
+        from fsoc_tracker.benchmark.report import verify_performance_report
+        verdict = verify_performance_report(args.report)
+        print(f"Report: {verdict.get('report')}")
+        print(f"Raw frames checked: {verdict.get('frames', 0)}")
+        for key, d in verdict.get("details", {}).items():
+            mark = "OK " if d["match"] else "DIFF"
+            print(f"  [{mark}] {key}: stored={d['stored']} recomputed={d['recomputed']}")
+        print("VERIFY: " + ("PASS" if verdict["ok"] else "FAIL"))
+        sys.exit(0 if verdict["ok"] else 1)
 
     if args.command == "sim":
         seed_list = None
@@ -267,6 +305,9 @@ def main() -> None:
             args.verbose, seeds=seed_list,
             assoc_gate_px=getattr(args, "assoc_gate_px", None),
             assoc_method=getattr(args, "assoc_method", None),
+            assoc_appearance=getattr(args, "assoc_appearance", None),
+            assoc_identity=getattr(args, "assoc_identity", None),
+            identity_code=getattr(args, "identity_code", None),
             lead_compensation=bool(getattr(args, "lead", False)),
             lead_time_s=getattr(args, "lead_time", None),
         )
@@ -281,7 +322,8 @@ def main() -> None:
         print(f"ERROR: Video file not found: {video_input}", file=sys.stderr)
         sys.exit(1)
 
-    result = run_video_benchmark(video_input, args.output, args.verbose)
+    result = run_video_benchmark(video_input, args.output, args.verbose,
+                                 backend=getattr(args, "backend", "classical"))
     sys.exit(0 if result["frame_count"] > 0 else 1)
 
 

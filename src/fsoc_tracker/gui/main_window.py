@@ -15,44 +15,71 @@ from __future__ import annotations
 
 import json
 
+from fsoc_tracker.gui.controller import ApplicationController
 from fsoc_tracker.gui.state import ApplicationViewState, SystemMode
 from fsoc_tracker.gui.theme import Colors, apply_theme
-from fsoc_tracker.gui.controller import ApplicationController
 from fsoc_tracker.gui.worker import ProcessingWorker
 
 try:
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QAction, QKeySequence
     from PySide6.QtWidgets import (
-        QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QFrame, QStatusBar, QMessageBox, QLabel,
-        QTabWidget, QGridLayout, QFileDialog, QComboBox,
-        QStackedWidget, QPushButton, QGroupBox, QSpinBox,
-        QDoubleSpinBox, QCheckBox, QTextEdit,
+        QCheckBox,
+        QComboBox,
+        QDoubleSpinBox,
+        QFileDialog,
+        QFrame,
+        QGridLayout,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QScrollArea,
+        QSpinBox,
+        QStackedWidget,
+        QStatusBar,
+        QTabWidget,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
     )
 except ImportError:
     from PyQt5.QtCore import Qt, QTimer  # type: ignore
     from PyQt5.QtGui import QAction, QKeySequence  # type: ignore
     from PyQt5.QtWidgets import (
-        QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QStatusBar, QMessageBox, QLabel,
-        QTabWidget, QGridLayout, QFileDialog, QComboBox,  # type: ignore
-        QPushButton, QGroupBox, QSpinBox,  # type: ignore
-        QDoubleSpinBox, QCheckBox, QTextEdit,  # type: ignore
+        QCheckBox,
+        QComboBox,
+        QDoubleSpinBox,  # type: ignore
+        QFileDialog,
+        QFrame,
+        QGridLayout,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,  # type: ignore
+        QSpinBox,
+        QStatusBar,
+        QTabWidget,  # type: ignore
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
     )
 
-from fsoc_tracker.gui.camera_workspace import CameraTrackingWorkspace
-from fsoc_tracker.gui.camera_view import CameraViewWidget
-from fsoc_tracker.gui.world_view import WorldViewWidget
-from fsoc_tracker.gui.telemetry import TelemetryPanel
-from fsoc_tracker.gui.controls import ControlPanel
-from fsoc_tracker.gui.scorecard import ScorecardWidget
-from fsoc_tracker.gui.plots import PlotsWidget
-from fsoc_tracker.gui.event_log import EventLogPanel
+from fsoc_tracker.gui.about import AboutDialog
 from fsoc_tracker.gui.ai_panel import AIPanel
 from fsoc_tracker.gui.benchmark_panel import BenchmarkPanel
-from fsoc_tracker.gui.about import AboutDialog
-from fsoc_tracker.gui.hud_panels import AIHUD, LinkHUD, CommunicationHUD
-
+from fsoc_tracker.gui.camera_workspace import CameraTrackingWorkspace
+from fsoc_tracker.gui.controls import ControlPanel, _shape_label_to_value
+from fsoc_tracker.gui.event_log import EventLogPanel
+from fsoc_tracker.gui.hud_panels import AIHUD, CommunicationHUD, LinkHUD
+from fsoc_tracker.gui.plots import PlotsWidget
+from fsoc_tracker.gui.scorecard import ScorecardWidget
+from fsoc_tracker.gui.telemetry import TelemetryPanel
+from fsoc_tracker.gui.world_view import WorldViewWidget
 
 # ---------------------------------------------------------------------------
 #  Page indices
@@ -187,6 +214,8 @@ class MainWindow(QMainWindow):
         # Generic world under configuration (CREATE WORLD actions build
         # this; START in simulation mode requires it — no scene presets).
         self._world_config = None
+        # Last successfully opened video file (reused by START in VIDEO mode).
+        self._last_video_path: str | None = None
 
         self.setWindowTitle("FSOC OPTICAL TRACKING SYSTEM | SIH26169")
         self.setMinimumSize(1200, 800)
@@ -278,7 +307,7 @@ class MainWindow(QMainWindow):
         # titles remain in tooltips and the window title).
         self._nav_buttons: list[QPushButton] = []
         nav_labels = ["SETUP", "CAMERA", "ANALYSIS", "WORLD", "BENCH"]
-        for i, (title, short) in enumerate(zip(PAGE_TITLES, nav_labels)):
+        for i, (title, short) in enumerate(zip(PAGE_TITLES, nav_labels, strict=True)):
             btn = QPushButton(f"{short}")
             btn.setToolTip(title)
             btn.setFixedHeight(48)
@@ -497,6 +526,19 @@ class MainWindow(QMainWindow):
         self._src_combo.currentTextChanged.connect(self._on_source_changed)
         layout.addWidget(self._src_combo)
 
+        # Visible video file loader — always present so the user never
+        # has to hunt through menus or combos to open a video.
+        self._btn_load_video = QPushButton("LOAD VIDEO")
+        self._btn_load_video.setFixedHeight(22)
+        self._btn_load_video.setStyleSheet(
+            f"QPushButton {{ color: {Colors.CROSSHAIR}; font-size: 8px; font-weight: bold; "
+            f"padding: 2px 10px; background: transparent; border: 1px solid {Colors.CROSSHAIR}; "
+            f"border-radius: 3px; }} "
+            f"QPushButton:hover {{ background: {Colors.CROSSHAIR}; color: #000; }}"
+        )
+        self._btn_load_video.clicked.connect(self._on_open_video)
+        layout.addWidget(self._btn_load_video)
+
         layout.addSpacing(8)
 
         # World actions (replaces the retired Scene 1-15 selector)
@@ -643,9 +685,6 @@ class MainWindow(QMainWindow):
         self._link_hud = LinkHUD()
         self._comm_hud = CommunicationHUD()
 
-        # Legacy: kept for backward compatibility with tests
-        self._camera_view = CameraViewWidget()
-
         # Page 0: Mission Setup
         self._mission_setup_page = self._build_mission_setup_page()
         self._body_stack.addWidget(self._mission_setup_page)
@@ -661,6 +700,7 @@ class MainWindow(QMainWindow):
         # Page 3: World
         self._world_view = WorldViewWidget()
         self._world_view.target_selected.connect(self._on_target_selected)
+        self._world_view.terminal_selected.connect(self._on_terminal_selected)
         self._world_view.scan_started.connect(self._on_start_scan)
         self._world_view.beacon_dragged.connect(self._on_beacon_dragged)
         self._world_view.terminal_placed.connect(self._on_terminal_placed)
@@ -683,6 +723,7 @@ class MainWindow(QMainWindow):
         # unwired widgets here).
         self._setup_world_view = WorldViewWidget()
         self._setup_world_view.target_selected.connect(self._on_target_selected)
+        self._setup_world_view.terminal_selected.connect(self._on_terminal_selected)
         self._setup_world_view.scan_started.connect(self._on_start_scan)
         self._setup_world_view.beacon_dragged.connect(self._on_beacon_dragged)
         self._setup_world_view.terminal_placed.connect(self._on_terminal_placed)
@@ -697,31 +738,39 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         self._traj_combo = QComboBox()
-        self._traj_combo.addItems(["straight_line", "circular", "figure_8", "random", "spiral", "sinusoidal"])
+        self._traj_combo.addItems(["straight_line", "circular", "figure_8", "random", "random_walk", "spiral", "sinusoidal", "user_controlled"])
         layout.addWidget(QLabel("Trajectory:"), 0, 0)
         layout.addWidget(self._traj_combo, 0, 1)
 
         self._target_size = QDoubleSpinBox()
-        self._target_size.setRange(3, 50)
+        self._target_size.setRange(5, 20)
         self._target_size.setValue(10)
         self._target_size.setSuffix(" px")
         layout.addWidget(QLabel("Target Size:"), 1, 0)
         layout.addWidget(self._target_size, 1, 1)
 
+        # Beacon spot shape (PS: user-defined, default Square). "Spot"
+        # keeps the legacy soft-Gaussian rendering; Square/Circular
+        # render hard-edged spots of the selected geometry.
+        self._target_shape = QComboBox()
+        self._target_shape.addItems(["Spot (soft)", "Square", "Circular"])
+        layout.addWidget(QLabel("Target Shape:"), 2, 0)
+        layout.addWidget(self._target_shape, 2, 1)
+
         self._seed_spin = QSpinBox()
         self._seed_spin.setRange(0, 99999)
         self._seed_spin.setValue(42)
-        layout.addWidget(QLabel("Seed:"), 2, 0)
-        layout.addWidget(self._seed_spin, 2, 1)
+        layout.addWidget(QLabel("Seed:"), 3, 0)
+        layout.addWidget(self._seed_spin, 3, 1)
 
         self._sim_speed = QDoubleSpinBox()
         self._sim_speed.setRange(0.1, 10.0)
         self._sim_speed.setValue(1.0)
         self._sim_speed.setSingleStep(0.1)
-        layout.addWidget(QLabel("Speed:"), 3, 0)
-        layout.addWidget(self._sim_speed, 3, 1)
+        layout.addWidget(QLabel("Speed:"), 4, 0)
+        layout.addWidget(self._sim_speed, 4, 1)
 
-        layout.setRowStretch(4, 1)
+        layout.setRowStretch(5, 1)
         return w
 
     def _setup_tab_beacon(self) -> QWidget:
@@ -750,7 +799,108 @@ class MainWindow(QMainWindow):
         btn_select.clicked.connect(self._on_set_beacon)
         layout.addWidget(btn_select, 4, 0, 1, 2)
 
-        layout.setRowStretch(5, 1)
+        keys_hint = QLabel(
+            "Move: A/D ±X · Q/E ±Y · W/S ±Z · arrows · Space hold · R reset · M maneuver\n"
+            "Needs a user_controlled beacon (Trajectory combo + Add).")
+        keys_hint.setWordWrap(True)
+        keys_hint.setStyleSheet(
+            f"color: {Colors.MUTED}; font-size: 8px; "
+            f"background: transparent; border: none;")
+        layout.addWidget(keys_hint, 5, 0, 1, 2)
+
+        self._selected_label = QLabel("Selected: none (click a beacon or Terminal A in 3D)")
+        self._selected_label.setWordWrap(True)
+        self._selected_label.setStyleSheet(
+            f"color: {Colors.ACCENT}; font-size: 8px; font-weight: bold; "
+            f"background: transparent; border: none;")
+        layout.addWidget(self._selected_label, 6, 0, 1, 2)
+
+        # --- Per-beacon editor ---
+        self._beacon_editor = QWidget()
+        elayout = QGridLayout(self._beacon_editor)
+        elayout.setContentsMargins(0, 0, 0, 0)
+        elayout.setSpacing(3)
+        self._edit_traj = QComboBox()
+        self._edit_traj.addItems(["straight_line", "circular", "figure_8", "random", "random_walk",
+                                  "spiral", "sinusoidal", "user_controlled"])
+        elayout.addWidget(QLabel("Motion:"), 0, 0)
+        elayout.addWidget(self._edit_traj, 0, 1)
+        self._edit_size = QDoubleSpinBox()
+        self._edit_size.setRange(5, 20)
+        self._edit_size.setValue(10)
+        self._edit_size.setSuffix(" px")
+        elayout.addWidget(QLabel("Size:"), 1, 0)
+        elayout.addWidget(self._edit_size, 1, 1)
+        self._edit_bright = QDoubleSpinBox()
+        self._edit_bright.setRange(0.1, 3.0)
+        self._edit_bright.setValue(1.0)
+        self._edit_bright.setSingleStep(0.1)
+        elayout.addWidget(QLabel("Bright:"), 2, 0)
+        elayout.addWidget(self._edit_bright, 2, 1)
+        self._edit_seed = QSpinBox()
+        self._edit_seed.setRange(0, 99999)
+        self._edit_seed.setValue(42)
+        elayout.addWidget(QLabel("Seed:"), 3, 0)
+        elayout.addWidget(self._edit_seed, 3, 1)
+        self._edit_shape = QComboBox()
+        self._edit_shape.addItems(["Spot (soft)", "Square", "Circular"])
+        elayout.addWidget(QLabel("Shape:"), 4, 0)
+        elayout.addWidget(self._edit_shape, 4, 1)
+        self._edit_x = QDoubleSpinBox()
+        self._edit_x.setRange(0, 2000)
+        self._edit_y = QDoubleSpinBox()
+        self._edit_y.setRange(0, 2000)
+        self._edit_z = QDoubleSpinBox()
+        self._edit_z.setRange(0, 2000)
+        for spin in (self._edit_x, self._edit_y, self._edit_z):
+            spin.setMaximum(2000.0)
+        elayout.addWidget(QLabel("X:"), 5, 0)
+        elayout.addWidget(self._edit_x, 5, 1)
+        elayout.addWidget(QLabel("Y:"), 6, 0)
+        elayout.addWidget(self._edit_y, 6, 1)
+        elayout.addWidget(QLabel("Z:"), 7, 0)
+        elayout.addWidget(self._edit_z, 7, 1)
+        btn_apply_beacon = QPushButton("Apply to beacon")
+        btn_apply_beacon.clicked.connect(self._on_apply_beacon_edit)
+        elayout.addWidget(btn_apply_beacon, 8, 0, 1, 2)
+        self._beacon_editor.setVisible(False)
+        layout.addWidget(self._beacon_editor, 7, 0, 1, 2)
+
+        # --- Terminal A editor ---
+        self._terminal_editor = QWidget()
+        tlayout = QGridLayout(self._terminal_editor)
+        tlayout.setContentsMargins(0, 0, 0, 0)
+        tlayout.setSpacing(3)
+        self._term_x = QDoubleSpinBox()
+        self._term_x.setRange(0, 2000)
+        self._term_x.setValue(1000)
+        self._term_y = QDoubleSpinBox()
+        self._term_y.setRange(0, 2000)
+        self._term_y.setValue(1000)
+        self._term_z = QDoubleSpinBox()
+        self._term_z.setRange(0, 2000)
+        self._term_z.setValue(50)
+        self._term_yaw = QDoubleSpinBox()
+        self._term_yaw.setRange(-180, 180)
+        self._term_pitch = QDoubleSpinBox()
+        self._term_pitch.setRange(-90, 90)
+        tlayout.addWidget(QLabel("X:"), 0, 0)
+        tlayout.addWidget(self._term_x, 0, 1)
+        tlayout.addWidget(QLabel("Y:"), 1, 0)
+        tlayout.addWidget(self._term_y, 1, 1)
+        tlayout.addWidget(QLabel("Z:"), 2, 0)
+        tlayout.addWidget(self._term_z, 2, 1)
+        tlayout.addWidget(QLabel("Yaw°:"), 3, 0)
+        tlayout.addWidget(self._term_yaw, 3, 1)
+        tlayout.addWidget(QLabel("Pitch°:"), 4, 0)
+        tlayout.addWidget(self._term_pitch, 4, 1)
+        btn_apply_term = QPushButton("Apply to Terminal A")
+        btn_apply_term.clicked.connect(self._on_apply_terminal_edit)
+        tlayout.addWidget(btn_apply_term, 5, 0, 1, 2)
+        self._terminal_editor.setVisible(False)
+        layout.addWidget(self._terminal_editor, 8, 0, 1, 2)
+
+        layout.setRowStretch(9, 1)
         return w
 
     def _setup_tab_camera(self) -> QWidget:
@@ -824,6 +974,8 @@ class MainWindow(QMainWindow):
             ("Motion Blur", "motion_blur"), ("Bri/Contrast", "brightness_contrast"),
             ("Platform", "platform_motion"), ("Disappear", "target_disappearance"),
             ("Distractors", "distractors"), ("Turbulence", "turbulence"),
+            ("Gaussian", "noise_gaussian"), ("Salt&Pepper", "noise_salt_pepper"),
+            ("Poisson", "noise_poisson"),
         ]
         self._dist_checks: dict[str, QCheckBox] = {}
         for i, (label, key) in enumerate(effects):
@@ -831,6 +983,13 @@ class MainWindow(QMainWindow):
             cb.toggled.connect(lambda _c: self._on_disturbance_ui_changed())
             layout.addWidget(cb, row + i // 4, i % 4)
             self._dist_checks[key] = cb
+        # Noise subtypes default on (legacy behavior: all types applied);
+        # they gate which noise types the master Noise switch applies.
+        for sub in ("noise_gaussian", "noise_salt_pepper", "noise_poisson"):
+            self._dist_checks[sub].setChecked(True)
+        self._dist_checks["noise_gaussian"].setToolTip("Additive Gaussian noise")
+        self._dist_checks["noise_salt_pepper"].setToolTip("Salt & pepper (~10% per PS)")
+        self._dist_checks["noise_poisson"].setToolTip("Photon-shot Poisson noise")
 
         self._dist_preset.currentTextChanged.connect(self._on_dist_preset_changed)
         self._dist_preset.currentTextChanged.connect(
@@ -845,6 +1004,50 @@ class MainWindow(QMainWindow):
             lambda _v: self._on_disturbance_ui_changed())
         layout.addWidget(QLabel("Intensity:"), row, 0)
         layout.addWidget(self._dist_intensity, row, 1, 1, 3)
+
+        # --- PS numeric tuning (user-defined, clamped to PS maxima) ---
+        row += 1
+        self._dist_noise_sigma = QDoubleSpinBox()
+        self._dist_noise_sigma.setRange(0.0, 20.0)
+        self._dist_noise_sigma.setValue(5.0)
+        self._dist_noise_sigma.setSingleStep(0.5)
+        self._dist_noise_sigma.setSuffix(" σ")
+        self._dist_noise_sigma.setToolTip("Gaussian noise std dev (PS max 20)")
+        self._dist_noise_sigma.valueChanged.connect(
+            lambda _v: self._on_disturbance_ui_changed())
+        layout.addWidget(QLabel("Noise σ:"), row, 0)
+        layout.addWidget(self._dist_noise_sigma, row, 1)
+
+        self._dist_noise_density = QDoubleSpinBox()
+        self._dist_noise_density.setRange(0.0, 0.5)
+        self._dist_noise_density.setValue(0.05)
+        self._dist_noise_density.setSingleStep(0.01)
+        self._dist_noise_density.setToolTip("Salt & pepper density (PS ~10%)")
+        self._dist_noise_density.valueChanged.connect(
+            lambda _v: self._on_disturbance_ui_changed())
+        layout.addWidget(QLabel("S&P dens:"), row, 2)
+        layout.addWidget(self._dist_noise_density, row, 3)
+
+        row += 1
+        self._dist_jitter_amp = QDoubleSpinBox()
+        self._dist_jitter_amp.setRange(0.0, 20.0)
+        self._dist_jitter_amp.setValue(5.0)
+        self._dist_jitter_amp.setSingleStep(0.5)
+        self._dist_jitter_amp.setSuffix(" px")
+        self._dist_jitter_amp.setToolTip("Camera jitter amplitude (PS max ±20 px/frame)")
+        self._dist_jitter_amp.valueChanged.connect(
+            lambda _v: self._on_disturbance_ui_changed())
+        layout.addWidget(QLabel("Jitter amp:"), row, 0)
+        layout.addWidget(self._dist_jitter_amp, row, 1)
+
+        self._dist_platform_type = QComboBox()
+        self._dist_platform_type.addItems(
+            ["linear", "circular", "figure_eight", "spiral", "random"])
+        self._dist_platform_type.setToolTip("Platform motion path (PS default linear)")
+        self._dist_platform_type.currentTextChanged.connect(
+            lambda _t: self._on_disturbance_ui_changed())
+        layout.addWidget(QLabel("Platform:"), row, 2)
+        layout.addWidget(self._dist_platform_type, row, 3)
 
         return w
 
@@ -863,7 +1066,25 @@ class MainWindow(QMainWindow):
                     for key, cb in self._dist_checks.items()
                 },
                 "disturbance_intensity": self._dist_intensity.value(),
+                **self._disturbance_tuning(),
             })
+
+    def _disturbance_tuning(self) -> dict:
+        """PS numeric disturbance tuning from widgets (PS-clamped)."""
+        tuning: dict = {}
+        if hasattr(self, "_dist_noise_sigma"):
+            tuning["disturbance_noise_sigma"] = float(
+                self._dist_noise_sigma.value())
+        if hasattr(self, "_dist_noise_density"):
+            tuning["disturbance_noise_density"] = float(
+                self._dist_noise_density.value())
+        if hasattr(self, "_dist_jitter_amp"):
+            tuning["disturbance_jitter_amp"] = float(
+                self._dist_jitter_amp.value())
+        if hasattr(self, "_dist_platform_type"):
+            tuning["disturbance_platform_type"] = str(
+                self._dist_platform_type.currentText())
+        return tuning
 
     def _on_dist_preset_changed(self, preset: str) -> None:
         presets = {
@@ -886,6 +1107,12 @@ class MainWindow(QMainWindow):
         try:
             for key, cb in self._dist_checks.items():
                 cb.setChecked(checks.get(key, False))
+            # Noise subtypes follow the master Noise switch on preset
+            # sync (they gate which noise types the master applies).
+            noise_on = checks.get("noise", False)
+            for sub in ("noise_gaussian", "noise_salt_pepper", "noise_poisson"):
+                if sub in self._dist_checks:
+                    self._dist_checks[sub].setChecked(noise_on)
         finally:
             for cb in self._dist_checks.values():
                 cb.blockSignals(False)
@@ -1099,6 +1326,10 @@ class MainWindow(QMainWindow):
         src_row.addWidget(QLabel("MODE:"))
         self._mission_mode_combo = QComboBox()
         self._mission_mode_combo.addItems(["SIMULATION", "VIDEO", "LIVE"])
+        # Mirror of the top-bar source selector: one handler owns mode
+        # changes, so this combo forwards instead of diverging.
+        self._mission_mode_combo.currentTextChanged.connect(
+            self._on_sidebar_mode_changed)
         src_row.addWidget(self._mission_mode_combo)
         layout.addLayout(src_row)
 
@@ -1125,9 +1356,15 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_sidebar_camera(self) -> QWidget:
-        """Sidebar for Camera Tracking: telemetry + scorecard + AI summary."""
-        w = QWidget()
-        layout = QVBoxLayout(w)
+        """Sidebar for Camera Tracking: telemetry + scorecard + AI summary.
+
+        The content is taller than the viewport, so it lives in a scroll
+        area — without one the layout squeezes the telemetry groups into
+        illegibility. Visuals/dimensions are unchanged; only scrolling is
+        added, scoped to this sidebar alone.
+        """
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
@@ -1178,7 +1415,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._ai_hud)
 
         layout.addStretch()
-        return w
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.setWidget(content)
+        return scroll
 
     def _build_sidebar_analysis(self) -> QWidget:
         """Sidebar for Analysis: link + comm + event log."""
@@ -1430,6 +1674,7 @@ class MainWindow(QMainWindow):
     def _on_target_selected(self, target_id: int) -> None:
         s = self._state
         s.selected_object_id = target_id
+        s.selected_terminal_a = False
         s.designated_beacon_id = target_id
         s.tracked_target_id = target_id
         s.terminal_b.active = True
@@ -1440,6 +1685,133 @@ class MainWindow(QMainWindow):
                 s.terminal_b.world_y = t.world_y
                 s.terminal_b.world_z = t.world_z
                 break
+        self._show_beacon_editor(target_id)
+        self._update_beacon_list()
+
+    def _on_terminal_selected(self) -> None:
+        s = self._state
+        s.selected_object_id = None
+        s.selected_terminal_a = True
+        term = s.terminal_a
+        if hasattr(self, "_term_x"):
+            self._term_x.setValue(term.world_x)
+            self._term_y.setValue(term.world_y)
+            self._term_z.setValue(term.world_z)
+            self._term_yaw.setValue(term.yaw_deg)
+            self._term_pitch.setValue(term.pitch_deg)
+            self._terminal_editor.setVisible(True)
+            self._beacon_editor.setVisible(False)
+            self._selected_label.setText("Selected: TERMINAL A")
+        s.add_event("Terminal A selected — edit pose below", "INFO")
+        self._update_beacon_list()
+
+    def _show_beacon_editor(self, target_id: int) -> None:
+        if not hasattr(self, "_edit_traj"):
+            return
+        self._terminal_editor.setVisible(False)
+        self._beacon_editor.setVisible(True)
+        self._selected_label.setText(f"Selected: BEACON {target_id}")
+        self._populate_beacon_editor(target_id)
+
+    def _populate_beacon_editor(self, target_id: int) -> None:
+        """Fill editor widgets from staged config or live engine state."""
+        traj, size, bright, seed, shape, x, y, z = (
+            "straight_line", 10.0, 1.0, 42, "spot", 1000.0, 1000.0, 500.0)
+        eng = (self._worker._sim_engine
+               if self._worker is not None else None)
+        if eng is not None:
+            for t in eng.get_state().targets:
+                if t.target_id == target_id:
+                    traj = t.trajectory_type or traj
+                    size = t.size_px if t.size_px else size
+                    bright = t.brightness
+                    seed = t.seed
+                    shape = t.shape or "square"
+                    x, y, z = t.x, t.y, t.z
+                    break
+        else:
+            world = getattr(self, "_world_config", None)
+            if world is not None:
+                for b in world.beacons:
+                    if b.beacon_id == target_id:
+                        traj = b.trajectory
+                        size, bright, seed = b.size_px, b.brightness, b.seed
+                        shape = getattr(b, "shape", "square")
+                        x, y, z = b.x0, b.y0, b.z0
+                        break
+        self._edit_traj.setCurrentText(traj)
+        self._edit_size.setValue(float(size))
+        self._edit_bright.setValue(float(bright))
+        self._edit_seed.setValue(int(seed))
+        shape_label = {"square": "Square", "circular": "Circular"}.get(
+            str(shape).lower(), "Spot (soft)")
+        self._edit_shape.setCurrentText(shape_label)
+        self._edit_x.setValue(float(x))
+        self._edit_y.setValue(float(y))
+        self._edit_z.setValue(float(z))
+
+    def _on_apply_beacon_edit(self) -> None:
+        bid = self._state.selected_object_id
+        if bid is None:
+            return
+        traj = self._edit_traj.currentText()
+        size = float(self._edit_size.value())
+        bright = float(self._edit_bright.value())
+        seed = int(self._edit_seed.value())
+        shape = _shape_label_to_value(self._edit_shape.currentText())
+        x, y, z = (float(self._edit_x.value()), float(self._edit_y.value()),
+                   float(self._edit_z.value()))
+        params = self._default_traj_params(traj, x, y, z, seed)
+        eng = (self._worker._sim_engine
+               if self._worker is not None else None)
+        if eng is not None:
+            ok = eng.reconfigure_beacon(
+                bid, trajectory_type=traj, trajectory_params=params,
+                size_px=size, brightness=bright, shape=shape, seed=seed)
+            self._state.add_event(
+                f"Beacon {bid} updated ({traj})" if ok
+                else f"Beacon {bid} update failed", "INFO" if ok else "ERROR")
+        else:
+            world = getattr(self, "_world_config", None)
+            if world is None:
+                return
+            for b in world.beacons:
+                if b.beacon_id == bid:
+                    b.trajectory = traj
+                    b.trajectory_params = dict(params)
+                    b.size_px = size
+                    b.brightness = bright
+                    b.shape = shape
+                    b.seed = seed
+                    b.x0, b.y0, b.z0 = x, y, z
+                    self._state.add_event(
+                        f"Beacon {bid} staged update ({traj})", "INFO")
+                    break
+        self._update_beacon_list()
+
+    def _on_apply_terminal_edit(self) -> None:
+        x, y, z = (float(self._term_x.value()), float(self._term_y.value()),
+                   float(self._term_z.value()))
+        yaw, pitch = float(self._term_yaw.value()), float(self._term_pitch.value())
+        if self._worker is not None:
+            ok = self._worker.set_terminal_pose_full(x, y, z, yaw, pitch)
+            self._state.add_event(
+                f"Terminal A moved to ({x:.0f}, {y:.0f}, {z:.0f})" if ok
+                else "Terminal move failed", "INFO" if ok else "ERROR")
+        world = getattr(self, "_world_config", None)
+        if world is not None:
+            world.terminal.x = x
+            world.terminal.y = y
+            world.terminal.z = z
+            world.terminal.yaw_deg = yaw
+            world.terminal.pitch_deg = pitch
+            self._state.add_event("Terminal A staged pose updated", "INFO")
+        if self._worker is None:
+            self._state.terminal_a.world_x = x
+            self._state.terminal_a.world_y = y
+            self._state.terminal_a.world_z = z
+            self._state.terminal_a.yaw_deg = yaw
+            self._state.terminal_a.pitch_deg = pitch
         self._update_beacon_list()
 
     @staticmethod
@@ -1470,7 +1842,9 @@ class MainWindow(QMainWindow):
         traj_type = (self._traj_combo.currentText()
                      if hasattr(self, "_traj_combo") else "straight_line")
         seed = self._seed_spin.value() if hasattr(self, "_seed_spin") else 42
-        # Spawn at the selected object's position, else near the terminal.
+        # Spawn at the selected object's position, else at a seeded-random
+        # location near the centre (PS default: random initial placement;
+        # reproducible from seed + beacon count).
         x, y, z = 1000.0, 1000.0, 500.0
         sel = self._state.selected_object_id
         if sel is not None:
@@ -1478,15 +1852,29 @@ class MainWindow(QMainWindow):
                 if t.target_id == sel:
                     x, y, z = t.world_x, t.world_y, t.world_z
                     break
+        else:
+            import random
+            eng = (self._worker._sim_engine
+                   if self._worker is not None else None)
+            if eng is not None:
+                n = len(eng.get_state().targets)
+            else:
+                wc0 = getattr(self, "_world_config", None)
+                n = len(wc0.beacons) if wc0 is not None else 0
+            rng = random.Random(f"{seed}:{n}")
+            x = 1000.0 + rng.uniform(-15.0, 15.0)
+            y = 1000.0 + rng.uniform(-15.0, 15.0)
         params = self._default_traj_params(traj_type, x, y, z, seed)
+        shape = (_shape_label_to_value(self._target_shape.currentText())
+                 if hasattr(self, "_target_shape") else "spot")
         if self._worker is not None and self._worker._sim_engine is not None:
             new_id = self._worker.inject_beacon(
-                x, y, z, traj_type, params, seed)
+                x, y, z, traj_type, params, seed, shape=shape)
             self._state.add_event(f"Beacon {new_id} added ({traj_type})", "INFO")
         elif getattr(self, "_world_config", None) is not None:
             from fsoc_tracker.simulation.world_builder import add_beacon as wb_add
             b = wb_add(self._world_config, x, y, z, motion=traj_type,
-                       motion_params=params, seed=seed)
+                       motion_params=params, seed=seed, shape=shape)
             self._state.add_event(
                 f"Beacon {b.beacon_id} staged in world ({traj_type})", "INFO")
         else:
@@ -1501,8 +1889,7 @@ class MainWindow(QMainWindow):
         if self._worker is not None and self._worker._sim_engine is not None:
             removed = self._worker._sim_engine.remove_beacon(bid)
         if not removed and getattr(self, "_world_config", None) is not None:
-            from fsoc_tracker.simulation.world_builder import (
-                remove_beacon as wb_remove)
+            from fsoc_tracker.simulation.world_builder import remove_beacon as wb_remove
             removed = wb_remove(self._world_config, bid)
         if removed:
             if self._state.designated_beacon_id == bid:
@@ -1512,6 +1899,12 @@ class MainWindow(QMainWindow):
         else:
             self._state.add_event(f"Beacon {bid} not found", "WARNING")
         self._state.selected_object_id = None
+        self._state.selected_terminal_a = False
+        if hasattr(self, "_beacon_editor"):
+            self._beacon_editor.setVisible(False)
+            self._terminal_editor.setVisible(False)
+            self._selected_label.setText(
+                "Selected: none (click a beacon or Terminal A in 3D)")
         self._update_beacon_list()
 
     def _on_set_beacon(self) -> None:
@@ -1548,6 +1941,8 @@ class MainWindow(QMainWindow):
                 self._state.add_event("No beacon to designate", "WARNING")
 
     def _update_beacon_list(self) -> None:
+        # Keep the 3D views in sync with staged content first.
+        self._refresh_staged_targets()
         if hasattr(self, "_beacon_list"):
             lines = []
             for t in self._state.targets_all:
@@ -1618,9 +2013,73 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     #  Actions — source / mode
     # ------------------------------------------------------------------
+    def _on_sidebar_mode_changed(self, text: str) -> None:
+        """Sidebar mirror of the top-bar source selector (single handler)."""
+        self._src_combo.blockSignals(True)
+        self._src_combo.setCurrentText(text)
+        self._src_combo.blockSignals(False)
+        self._on_source_changed(text)
+
     def _on_source_changed(self, text: str) -> None:
         mode_map = {"SIMULATION": "simulation", "VIDEO": "video", "LIVE": "live"}
-        self._state.system_mode = SystemMode(mode_map.get(text, "simulation"))
+        mode = mode_map.get(text, "simulation")
+        if hasattr(self, "_mission_mode_combo"):
+            self._mission_mode_combo.blockSignals(True)
+            self._mission_mode_combo.setCurrentText(text)
+            self._mission_mode_combo.blockSignals(False)
+        if mode == "video":
+            # Opening a video IS the action: prompt immediately so the
+            # mode switch visibly does something.
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open Video File", "",
+                "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)",
+            )
+            if not path:
+                # Cancelled: revert the combo instead of stranding the UI
+                # in a mode with no file.
+                self._src_combo.blockSignals(True)
+                self._src_combo.setCurrentText("SIMULATION")
+                self._src_combo.blockSignals(False)
+                return
+            self._open_video_file(path)
+            return
+        if mode == "live":
+            self._on_live_camera()
+            return
+        self._state.system_mode = SystemMode(mode)
+
+    def _open_video_file(self, path: str) -> bool:
+        """Start video tracking on path. Returns True on success."""
+        # Probe synchronously: OpenCV defers open failures to first
+        # read, so without this check a bad file would start a worker
+        # that silently stops itself on frame zero.
+        from fsoc_tracker.pipeline.sources import VideoSource
+        try:
+            probe = VideoSource(path)
+            probe.open()
+            frame = probe.read()
+            probe.release()
+        except Exception as e:
+            self._state.add_event(f"VIDEO failed: {e}", "ERROR")
+            return False
+        if frame is None:
+            self._state.add_event(
+                f"VIDEO failed: no decodable frames in {path}", "ERROR")
+            return False
+        if self._worker is not None:
+            self._worker.stop_run()
+        try:
+            self._start_worker({"mode": "video", "video_path": path})
+        except Exception as e:
+            self._state.add_event(f"VIDEO failed: {e}", "ERROR")
+            return False
+        self._last_video_path = path
+        self._src_combo.blockSignals(True)
+        self._src_combo.setCurrentText("VIDEO")
+        self._src_combo.blockSignals(False)
+        self._state.source_info = f"VIDEO: {path.split('/')[-1]}"
+        self._navigate_to(PAGE_CAMERA_TRACKING)
+        return True
 
     def _on_open_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1629,10 +2088,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        if self._worker is not None:
-            self._worker.stop_run()
-        self._start_worker({"mode": "video", "video_path": path})
-        self._state.source_info = f"VIDEO: {path.split('/')[-1]}"
+        self._open_video_file(path)
 
     def _on_live_camera(self) -> None:
         if self._worker is not None:
@@ -1658,6 +2114,22 @@ class MainWindow(QMainWindow):
                 return
             cfg["scenario"] = world
 
+        # VIDEO gate: a file is required — reuse the last one or ask.
+        if cfg.get("mode") == "video" and not cfg.get("video_path"):
+            if getattr(self, "_last_video_path", None):
+                cfg["video_path"] = self._last_video_path
+            else:
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "Open Video File", "",
+                    "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)",
+                )
+                if not path:
+                    self._state.add_event(
+                        "START blocked: choose a video file first", "ERROR")
+                    return
+                cfg["video_path"] = path
+                self._last_video_path = path
+
         self._start_worker(cfg)
         self._navigate_to(PAGE_CAMERA_TRACKING)
 
@@ -1671,6 +2143,9 @@ class MainWindow(QMainWindow):
             cfg['trajectory'] = self._traj_combo.currentText()
         if hasattr(self, '_target_size'):
             cfg['target_size'] = self._target_size.value()
+        if hasattr(self, '_target_shape'):
+            cfg['target_shape'] = _shape_label_to_value(
+                self._target_shape.currentText())
         if hasattr(self, '_seed_spin'):
             cfg['seed'] = self._seed_spin.value()
         if hasattr(self, '_sim_speed'):
@@ -1697,6 +2172,7 @@ class MainWindow(QMainWindow):
             }
         if hasattr(self, '_dist_intensity'):
             cfg['disturbance_intensity'] = self._dist_intensity.value()
+        cfg.update(self._disturbance_tuning())
 
         return cfg
 
@@ -1745,6 +2221,8 @@ class MainWindow(QMainWindow):
     def _on_config_changed(self, cfg: dict) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.update_disturbance(cfg)
+            self._worker.update_perception(cfg)
+            self._worker.apply_runtime_toggles(cfg)
 
     def _on_seek_video(self, frame_index: int) -> None:
         if self._worker:
@@ -2022,7 +2500,48 @@ class MainWindow(QMainWindow):
                 f"World randomized (seed {seed}, {n} beacons)", "SUCCESS")
         # Reset the combo back to a neutral display is intentionally NOT
         # done: the visible entry records the last world action.
+        self._refresh_staged_targets()
         self._update_beacon_list()
+
+    def _refresh_staged_targets(self) -> None:
+        """Mirror staged (pre-start) world content into the view state.
+
+        targets_all is otherwise populated only by the running worker,
+        so staged beacons and the terminal would be invisible (and
+        unclickable) in the 3D views until START. Has no effect once a
+        worker exists — live engine data wins.
+        """
+        if self._worker is not None:
+            return
+        world = getattr(self, "_world_config", None)
+        if world is None:
+            return
+        from fsoc_tracker.gui.state import TargetView
+        views = []
+        for b in world.beacons:
+            views.append(TargetView(
+                target_id=b.beacon_id,
+                visible=bool(b.active),
+                world_x=float(b.x0), world_y=float(b.y0), world_z=float(b.z0),
+                size_px=float(b.size_px),
+                trajectory_type=str(b.trajectory),
+            ))
+        self._state.targets_all = views
+        term = world.terminal
+        self._state.terminal_a.active = True
+        self._state.terminal_a.terminal_id = "TERM_A"
+        self._state.terminal_a.world_x = float(term.x)
+        self._state.terminal_a.world_y = float(term.y)
+        self._state.terminal_a.world_z = float(term.z)
+        self._state.terminal_a.yaw_deg = float(term.yaw_deg)
+        self._state.terminal_a.pitch_deg = float(term.pitch_deg)
+        for view in (getattr(self, "_setup_world_view", None),
+                     getattr(self, "_world_view", None)):
+            if view is not None:
+                try:
+                    view.update_state(self._state)
+                except Exception:
+                    pass
 
     def _on_pov_changed(self, mode: str) -> None:
         self._state.camera_mode = mode
@@ -2036,6 +2555,16 @@ class MainWindow(QMainWindow):
         if self._try_beacon_key(event):
             self.update()
             return
+        if self._is_beacon_move_key(event.key()):
+            # Movement key with no controllable beacon: say so instead of
+            # silently falling through (the common "keys do nothing" trap).
+            if (self._worker is not None and self._worker.isRunning()
+                    and self._state is not None):
+                self._state.add_event(
+                    "No user-controlled beacon: set Trajectory to "
+                    "user_controlled and press + Add Beacon", "WARNING")
+                self.update()
+                return
         if self._state and self._state.camera_mode == "FOLLOW" and hasattr(self._state, "terminal_b"):
             speed = 5.0
             if event.key() == Qt.Key_W:
@@ -2053,6 +2582,15 @@ class MainWindow(QMainWindow):
             self.update()
         else:
             super().keyPressEvent(event)
+
+    @staticmethod
+    def _is_beacon_move_key(key: int) -> bool:
+        """True for keys that drive a user-controlled beacon."""
+        return key in (
+            Qt.Key_A, Qt.Key_D, Qt.Key_W, Qt.Key_S, Qt.Key_Q, Qt.Key_E,
+            Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
+            Qt.Key_Space, Qt.Key_R, Qt.Key_M,
+        )
 
     def _try_beacon_key(self, event) -> bool:
         """Route WASD/QE/arrows/STOP/RESET/RANDOM to a user-controlled beacon.

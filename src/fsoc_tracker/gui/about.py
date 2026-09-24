@@ -7,12 +7,18 @@ from fsoc_tracker.gui.theme import Colors
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (
-        QDialog, QVBoxLayout, QLabel, QPushButton,
+        QDialog,
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
     )
 except ImportError:
     from PyQt5.QtCore import Qt  # type: ignore
     from PyQt5.QtWidgets import (
-        QDialog, QVBoxLayout, QLabel, QPushButton,  # type: ignore
+        QDialog,  # type: ignore
+        QLabel,
+        QPushButton,
+        QVBoxLayout,
     )
 
 

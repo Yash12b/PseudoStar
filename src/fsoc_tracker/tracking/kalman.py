@@ -156,6 +156,7 @@ class KalmanFilter2D:
         # Predict
         self._x = F @ self._x
         self._P = F @ self._P @ F.T + Q
+        self._P = 0.5 * (self._P + self._P.T)
 
         return float(self._x[0, 0]), float(self._x[1, 0])
 
@@ -198,6 +199,9 @@ class KalmanFilter2D:
         # Update covariance (Joseph form for numerical stability)
         I_KH = np.eye(self._state_dim, dtype=np.float64) - K @ self._H
         self._P = I_KH @ self._P @ I_KH.T + K @ self._R @ K.T
+        # Enforce symmetry (roundoff drifts P asymmetric over thousands
+        # of updates; asymmetric P corrupts Mahalanobis gating).
+        self._P = 0.5 * (self._P + self._P.T)
 
         return float(self._x[0, 0]), float(self._x[1, 0])
 

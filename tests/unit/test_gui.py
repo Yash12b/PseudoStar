@@ -11,11 +11,11 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from fsoc_tracker.gui.controller import ApplicationController
 from fsoc_tracker.gui.state import (
     ApplicationViewState,
     BenchmarkView,
@@ -24,19 +24,17 @@ from fsoc_tracker.gui.state import (
     DisturbanceView,
     ErrorHistory,
     EventLogEntry,
-    PerformanceView,
     PerceptionState,
+    PerformanceView,
+    RunState,
     SIHScorecard,
     SystemMode,
     SystemState,
     TargetView,
     TrackingStateView,
-    RunState,
 )
-from fsoc_tracker.gui.controller import ApplicationController
-from fsoc_tracker.gui.worker import ProcessingWorker
 from fsoc_tracker.gui.theme import Colors, Fonts, Spacing, apply_theme
-
+from fsoc_tracker.gui.worker import ProcessingWorker
 
 # --- State Tests ---
 
@@ -123,6 +121,7 @@ class TestMiniPlot:
     def test_plot_can_render_with_data(self):
         from PySide6.QtGui import QImage
         from PySide6.QtWidgets import QApplication
+
         from fsoc_tracker.gui.plots import MiniPlot
 
         app = QApplication.instance() or QApplication([])
@@ -440,7 +439,10 @@ class TestProcessingWorker:
 
     def test_brain_gating_enables_lead_only_for_fast_confident(self):
         from fsoc_tracker.ai.mission import (
-            MissionAction, MissionDecision, SafeRecommendation, Situation,
+            MissionAction,
+            MissionDecision,
+            SafeRecommendation,
+            Situation,
         )
         worker = ProcessingWorker()
         worker.configure({"mode": "simulation"})
@@ -554,20 +556,6 @@ class TestWidgetState:
             import sys
             app = QApplication(sys.argv)
         return app
-
-    def test_camera_view_state_update(self, qapp):
-        from fsoc_tracker.gui.camera_view import CameraViewWidget
-        widget = CameraViewWidget()
-        state = ApplicationViewState()
-        state.perception.detected = True
-        state.perception.confidence = 0.95
-        state.tracking.state = "TRACKING"
-        state.tracking.locked = True
-        state.camera.fps = 30.0
-        state.camera.pan_deg = 1.5
-        state.camera.tilt_deg = -0.5
-        widget.update_frame(np.zeros((480, 640, 3), dtype=np.uint8), state)
-        assert widget._state is state
 
     def test_world_view_state_update(self, qapp):
         from fsoc_tracker.gui.world_view import WorldViewWidget
@@ -687,7 +675,7 @@ class TestWidgetState:
             "learned_temporal_learned_policy", "full_ai_mission",
         ]
         # Test that world combo lists generated benchmark worlds
-        assert panel._world_combo.count() == 8
+        assert panel._world_combo.count() == 10
         # Test source gating: only SIMULATION is benchmarkable
         assert panel._source_combo.count() == 3
         assert panel._source_combo.model().item(0).isEnabled()
@@ -777,6 +765,7 @@ class TestMainWindow:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -827,12 +816,10 @@ class TestMainWindow:
     def test_main_window_has_panels(self, qapp):
         from fsoc_tracker.gui.main_window import MainWindow
         window = MainWindow()
-        assert window._camera_view is not None
         assert window._world_view is not None
         assert window._telemetry is not None
         assert "STANDBY" in window._header_state.text()
         assert window._header_fps.text().startswith("PROC")
-        assert window._camera_view.objectName() == "CameraViewport"
         assert window._world_view.objectName() == "WorldViewport"
         window.close()
         assert window._control_panel is not None
@@ -862,8 +849,8 @@ class TestMainWindow:
         window.close()
 
     def test_main_window_about(self, qapp):
-        from fsoc_tracker.gui.main_window import MainWindow
         from fsoc_tracker.gui.about import AboutDialog
+        from fsoc_tracker.gui.main_window import MainWindow
         window = MainWindow()
         dlg = AboutDialog(window)
         assert dlg.windowTitle() == "About"
@@ -892,6 +879,7 @@ class TestGUIIntegration:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1047,6 +1035,7 @@ class TestMissionFlowStrip:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1152,6 +1141,7 @@ class TestCameraPredictionOverlay:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1160,6 +1150,7 @@ class TestCameraPredictionOverlay:
 
     def test_workspace_with_prediction_state_no_crash(self, qapp):
         import numpy as np
+
         from fsoc_tracker.gui.camera_workspace import CameraTrackingWorkspace
         from fsoc_tracker.gui.state import ApplicationViewState
         ws = CameraTrackingWorkspace()
@@ -1191,6 +1182,7 @@ class TestUserControlledBeaconWiring:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1237,6 +1229,7 @@ class TestUserControlledBeaconWiring:
     def test_beacon_key_routing(self, qapp):
         from PySide6.QtCore import QEvent, Qt
         from PySide6.QtGui import QKeyEvent
+
         from fsoc_tracker.gui.main_window import MainWindow
         from fsoc_tracker.gui.state import TargetView
         window = MainWindow()
@@ -1273,6 +1266,7 @@ class TestTelemetryAndEventExport:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1280,8 +1274,8 @@ class TestTelemetryAndEventExport:
         return app
 
     def test_telemetry_angular_error_and_fov(self, qapp):
-        from fsoc_tracker.gui.telemetry import TelemetryPanel
         from fsoc_tracker.gui.state import ApplicationViewState
+        from fsoc_tracker.gui.telemetry import TelemetryPanel
         panel = TelemetryPanel()
         s = ApplicationViewState()
         s.camera.image_width = 640
@@ -1311,12 +1305,14 @@ class TestTelemetryAndEventExport:
         jp = panel.export_jsonl(str(tmp_path / "events.jsonl"))
         cp = panel.export_csv(str(tmp_path / "events.csv"))
         import json
-        lines = open(jp).read().strip().split("\n")
+        with open(jp, encoding="utf-8") as f:
+            lines = f.read().strip().split("\n")
         assert len(lines) == 2
         first = json.loads(lines[0])
         assert first["message"] == "TRACK_STARTED"
         assert first["timestamp_s"] == pytest.approx(1.5)
-        rows = open(cp).read().strip().split("\n")
+        with open(cp, encoding="utf-8") as f:
+            rows = f.read().strip().split("\n")
         assert rows[0] == "timestamp_s,level,message"
         assert "TARGET_LOST" in rows[2]
 
@@ -1338,6 +1334,7 @@ class TestLayouts:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1345,7 +1342,7 @@ class TestLayouts:
         return app
 
     def test_five_layouts_apply_without_restart(self, qapp):
-        from fsoc_tracker.gui.main_window import MainWindow, LAYOUTS
+        from fsoc_tracker.gui.main_window import LAYOUTS, MainWindow
         window = MainWindow()
         for name, (central, sidebar, _desc) in LAYOUTS.items():
             assert window.set_layout(name) is True
@@ -1362,14 +1359,16 @@ class TestLayouts:
         window = MainWindow()
         window.set_layout("OPTICAL LAB")
         # OPTICAL LAB: world central + analysis sidebar (link dominant)
-        from fsoc_tracker.gui.main_window import PAGE_WORLD, PAGE_ANALYSIS
+        from fsoc_tracker.gui.main_window import PAGE_ANALYSIS, PAGE_WORLD
         assert window._body_stack.currentIndex() == PAGE_WORLD
         assert window._sidebar_stack.currentIndex() == PAGE_ANALYSIS
         window.close()
 
     def test_manual_navigation_marks_custom(self, qapp):
         from fsoc_tracker.gui.main_window import (
-            MainWindow, PAGE_MISSION_SETUP, LAYOUT_TRACKING_CONSOLE,
+            LAYOUT_TRACKING_CONSOLE,
+            PAGE_MISSION_SETUP,
+            MainWindow,
         )
         window = MainWindow()
         assert window.current_layout == LAYOUT_TRACKING_CONSOLE
@@ -1390,6 +1389,7 @@ class TestFloatingPanels:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1427,6 +1427,7 @@ class TestFloatingPanels:
 class TestFailureRiskWiring:
     def test_trained_weights_load(self):
         import os
+
         from fsoc_tracker.ai.failure_predictor import FailurePredictor
         path = "artifacts/models/failure-v1/failure-v1.npz"
         if not os.path.exists(path):
@@ -1463,8 +1464,7 @@ class TestPredictionHorizon:
         assert custom.prediction_horizon_s == pytest.approx(0.5)
 
     def test_horizon_flows_to_prediction(self):
-        from fsoc_tracker.ai.mission import (
-            AIMissionBrain, MissionObservation, ObservationFeatures)
+        from fsoc_tracker.ai.mission import AIMissionBrain, MissionObservation, ObservationFeatures
         brain = AIMissionBrain(prediction_horizon_s=0.25)
         obs = MissionObservation(
             features=ObservationFeatures(
@@ -1491,6 +1491,7 @@ class TestMissionSetupWiring:
     @pytest.fixture
     def qapp(self):
         import sys
+
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
@@ -1656,3 +1657,743 @@ class TestMissionSetupWiring:
             worker.stop_run()
             worker._release_resources()
         window.close()
+
+
+class TestVideoSourceSelection:
+    """VIDEO mode must offer a working file path, not a dead end."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_source_video_prompts_and_starts(self, qapp, tmp_path, monkeypatch):
+        import os
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        mp4 = os.path.join("test_videos", "test_target.mp4")
+        monkeypatch.setattr(
+            "fsoc_tracker.gui.main_window.QFileDialog.getOpenFileName",
+            lambda *a, **k: (mp4, ""),
+        )
+        window._src_combo.setCurrentText("VIDEO")
+        qapp.processEvents()
+        assert window._worker is not None
+        assert window._last_video_path == mp4
+        assert window._src_combo.currentText() == "VIDEO"
+        window._worker.stop_run()
+        window.close()
+
+    def test_source_video_cancel_reverts_combo(self, qapp, monkeypatch):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        monkeypatch.setattr(
+            "fsoc_tracker.gui.main_window.QFileDialog.getOpenFileName",
+            lambda *a, **k: ("", ""),
+        )
+        window._src_combo.setCurrentText("VIDEO")
+        qapp.processEvents()
+        assert window._src_combo.currentText() == "SIMULATION"
+        assert window._worker is None
+        window.close()
+
+    def test_open_video_file_bad_path_fails_cleanly(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        ok = window._open_video_file("/nonexistent/nope.mp4")
+        assert ok is False
+        assert any("VIDEO failed" in e.message for e in window._state.events)
+        window.close()
+
+    def test_start_video_uses_last_path(self, qapp):
+        import os
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        mp4 = os.path.join("test_videos", "test_target.mp4")
+        window._last_video_path = mp4
+        window._control_panel._mode_combo.setCurrentText("VIDEO")
+        window._on_start()
+        assert window._worker is not None
+        window._worker.stop_run()
+        window.close()
+
+    def test_start_video_without_path_prompts(self, qapp, monkeypatch):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._last_video_path = None
+        window._control_panel._mode_combo.setCurrentText("VIDEO")
+        monkeypatch.setattr(
+            "fsoc_tracker.gui.main_window.QFileDialog.getOpenFileName",
+            lambda *a, **k: ("", ""),
+        )
+        window._on_start()
+        assert window._worker is None
+        assert any("video file" in e.message for e in window._state.events)
+        window.close()
+
+    def test_sidebar_mode_mirror(self, qapp, tmp_path, monkeypatch):
+        import os
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        mp4 = os.path.join("test_videos", "test_target.mp4")
+        monkeypatch.setattr(
+            "fsoc_tracker.gui.main_window.QFileDialog.getOpenFileName",
+            lambda *a, **k: (mp4, ""),
+        )
+        window._mission_mode_combo.setCurrentText("VIDEO")
+        qapp.processEvents()
+        assert window._worker is not None
+        assert window._src_combo.currentText() == "VIDEO"
+        window._worker.stop_run()
+        window.close()
+
+    def test_top_combo_syncs_sidebar(self, qapp, tmp_path, monkeypatch):
+        import os
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        mp4 = os.path.join("test_videos", "test_target.mp4")
+        monkeypatch.setattr(
+            "fsoc_tracker.gui.main_window.QFileDialog.getOpenFileName",
+            lambda *a, **k: (mp4, ""),
+        )
+        window._src_combo.setCurrentText("VIDEO")
+        qapp.processEvents()
+        assert window._mission_mode_combo.currentText() == "VIDEO"
+        assert window._worker is not None
+        window._worker.stop_run()
+        window.close()
+
+
+class TestShapeAndDisturbanceTuning:
+    """PS compliance: shape selection + numeric disturbance tuning."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_shape_label_mapping(self):
+        from fsoc_tracker.gui.controls import _shape_label_to_value
+        assert _shape_label_to_value("Spot (soft)") == "spot"
+        assert _shape_label_to_value("Square") == "square"
+        assert _shape_label_to_value("Circular") == "circular"
+        assert _shape_label_to_value("") == "spot"
+
+    def test_sensor_shape_kwargs(self):
+        from fsoc_tracker.gui.worker import _sensor_shape_kwargs
+        assert _sensor_shape_kwargs("spot") == {}
+        assert _sensor_shape_kwargs("square") == {
+            "beacon_shape": "square", "beacon_soft_edges": False}
+        assert _sensor_shape_kwargs("circular") == {
+            "beacon_shape": "circular", "beacon_soft_edges": False}
+
+    def test_deposit_shape_override_default_unchanged(self):
+        import numpy as np
+
+        from fsoc_tracker.simulation.sensor.beacon import deposit_beacon
+        from fsoc_tracker.simulation.sensor.config import SensorConfig
+        cfg = SensorConfig()
+        a = np.zeros((64, 64)); b = np.zeros((64, 64))
+        deposit_beacon(a, 32.0, 32.0, 10.0, 200.0, cfg)
+        deposit_beacon(b, 32.0, 32.0, 10.0, 200.0, cfg,
+                       shape_override="square")
+        assert np.array_equal(a, b)
+
+    def test_deposit_hard_square_differs_from_spot(self):
+        import numpy as np
+
+        from fsoc_tracker.simulation.sensor.beacon import deposit_beacon
+        from fsoc_tracker.simulation.sensor.config import SensorConfig
+        cfg = SensorConfig(beacon_soft_edges=False)
+        a = np.zeros((64, 64)); b = np.zeros((64, 64))
+        deposit_beacon(a, 32.0, 32.0, 10.0, 200.0, cfg)
+        deposit_beacon(b, 32.0, 32.0, 10.0, 200.0, cfg,
+                       shape_override="circular")
+        assert not np.array_equal(a, b)
+
+    def test_beacon_config_shape_default(self):
+        from fsoc_tracker.simulation.scenario import BeaconConfig
+        assert BeaconConfig().shape == "square"
+
+    def test_control_panel_shape_and_tuning_keys(self, qapp):
+        from fsoc_tracker.gui.controls import ControlPanel
+        panel = ControlPanel()
+        cfg = panel.get_config()
+        assert cfg["target_shape"] == "spot"
+        assert cfg["disturbance_noise_sigma"] == 5.0
+        assert cfg["disturbance_noise_density"] == 0.05
+        assert cfg["disturbance_jitter_amp"] == 5.0
+        assert cfg["disturbance_platform_type"] == "linear"
+        assert cfg["disturbance_effects"]["noise_gaussian"] is True
+        assert cfg["disturbance_effects"]["noise_salt_pepper"] is True
+        assert cfg["disturbance_effects"]["noise_poisson"] is True
+        panel.close()
+
+    def test_main_window_tuning_keys(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        tuning = window._disturbance_tuning()
+        assert tuning["disturbance_noise_sigma"] == 5.0
+        assert tuning["disturbance_jitter_amp"] == 5.0
+        assert tuning["disturbance_platform_type"] == "linear"
+        cfg = window._get_unified_config()
+        assert cfg["target_shape"] == "spot"
+        assert cfg["disturbance_noise_sigma"] == 5.0
+        window.close()
+
+    def test_apply_overrides_tuning(self, qapp):
+        from fsoc_tracker.disturbances.config import (
+            DisturbanceConfig,
+            JitterConfig,
+            NoiseConfig,
+            PlatformMotionConfig,
+            PlatformMotionType,
+        )
+        from fsoc_tracker.gui.worker import ProcessingWorker
+        w = ProcessingWorker()
+        dist = DisturbanceConfig(
+            noise=NoiseConfig(), jitter=JitterConfig(),
+            platform_motion=PlatformMotionConfig())
+        w._apply_effect_overrides(
+            dist,
+            {"noise": True, "noise_gaussian": True,
+             "noise_salt_pepper": False, "noise_poisson": True,
+             "jitter": True, "platform_motion": True},
+            0.5,
+            tuning={"disturbance_noise_sigma": 12.0,
+                    "disturbance_noise_density": 0.1,
+                    "disturbance_jitter_amp": 30.0,  # over PS max: clamped
+                    "disturbance_platform_type": "circular"},
+        )
+        assert dist.noise.enabled is True
+        assert dist.noise.gaussian_sigma == 12.0
+        assert dist.noise.salt_pepper_density == 0.0  # subtype off
+        assert dist.noise.poisson_enabled is True
+        assert dist.jitter.amplitude_px == 20.0  # clamped to PS max
+        assert dist.platform_motion.type == PlatformMotionType.CIRCULAR
+
+    def test_apply_overrides_bad_platform_falls_back(self, qapp):
+        from fsoc_tracker.disturbances.config import (
+            DisturbanceConfig,
+            PlatformMotionConfig,
+            PlatformMotionType,
+        )
+        from fsoc_tracker.gui.worker import ProcessingWorker
+        w = ProcessingWorker()
+        dist = DisturbanceConfig(platform_motion=PlatformMotionConfig())
+        w._apply_effect_overrides(
+            dist, {"platform_motion": True}, 0.5,
+            tuning={"disturbance_platform_type": "nonsense"})
+        assert dist.platform_motion.type == PlatformMotionType.LINEAR
+
+    def test_apply_overrides_legacy_unchanged(self, qapp):
+        from fsoc_tracker.disturbances.config import (
+            DisturbanceConfig,
+            JitterConfig,
+            NoiseConfig,
+        )
+        from fsoc_tracker.gui.worker import ProcessingWorker
+        w = ProcessingWorker()
+        dist = DisturbanceConfig(noise=NoiseConfig(), jitter=JitterConfig())
+        w._apply_effect_overrides(
+            dist, {"noise": True, "jitter": True}, 0.5)
+        assert dist.noise.gaussian_sigma == 2.5
+        assert dist.noise.salt_pepper_density == 0.025
+        assert dist.jitter.amplitude_px == 2.5
+
+
+class TestBeaconControl:
+    """Simulation beacon control: trajectory option, keys, guidance."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_traj_combo_has_user_controlled(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        items = [window._traj_combo.itemText(i)
+                 for i in range(window._traj_combo.count())]
+        assert "user_controlled" in items
+        window.close()
+
+    def test_add_user_controlled_and_drive_with_key(self, qapp):
+        import time
+
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._traj_combo.setCurrentText("user_controlled")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.05)
+        eng = window._worker._sim_engine
+        uc = [t for t in eng.get_state().targets
+              if t.trajectory_type == "user_controlled"]
+        assert len(uc) == 1
+        window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_D,
+                                       Qt.NoModifier))
+        time.sleep(0.4)
+        qapp.processEvents()
+        aft = [t for t in eng.get_state().targets
+               if t.target_id == uc[0].target_id][0]
+        assert aft.x > uc[0].x
+        window._worker.stop_run()
+        window.close()
+
+    def test_move_key_without_uc_beacon_warns(self, qapp):
+        import time
+
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeyEvent
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._traj_combo.setCurrentText("circular")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.05)
+        window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_D,
+                                       Qt.NoModifier))
+        qapp.processEvents()
+        assert any("user-controlled beacon" in e.message
+                   for e in window._state.events)
+        window._worker.stop_run()
+        window.close()
+
+    def test_is_beacon_move_key(self, qapp):
+        from PySide6.QtCore import Qt
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        assert MainWindow._is_beacon_move_key(Qt.Key_W) is True
+        assert MainWindow._is_beacon_move_key(Qt.Key_F1) is False
+        window = MainWindow()
+        window.close()
+
+    def test_add_beacon_default_random_placement(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._traj_combo.setCurrentText("straight_line")
+        window._seed_spin.setValue(42)
+        window._on_add_beacon()
+        window._on_add_beacon()
+        wc = window._world_config
+        pos = [(b.x0, b.y0, b.z0) for b in wc.beacons]
+        assert len(pos) == 2
+        # Near centre (inside first-acquisition reach), not identical,
+        # reproducible
+        for x, y, z in pos:
+            assert 985.0 <= x <= 1015.0
+            assert 985.0 <= y <= 1015.0
+            assert z == 500.0
+        assert pos[0][:2] != pos[1][:2]
+        window2 = MainWindow()
+        window2._world_combo.setCurrentText("New empty world")
+        window2._traj_combo.setCurrentText("straight_line")
+        window2._seed_spin.setValue(42)
+        window2._on_add_beacon()
+        pos2 = [(b.x0, b.y0, b.z0) for b in window2._world_config.beacons]
+        assert pos2[0] == pos[0]
+        window.close()
+        window2.close()
+
+
+class TestWorldSelectionAndEditing:
+    """3D selection of beacons/terminal + per-object editing."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_staged_world_mirrored_pre_start(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        assert window._state.targets_all == []
+        window._world_combo.setCurrentText("New empty world")
+        window._traj_combo.setCurrentText("circular")
+        window._on_add_beacon()
+        shown = window._state.targets_all
+        assert len(shown) == 1
+        assert shown[0].trajectory_type == "circular"
+        assert shown[0].visible is True
+        assert window._state.terminal_a.active is True
+        assert window._state.terminal_a.world_x == 1000.0
+        window.close()
+
+    def test_terminal_select_and_move_staged(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._setup_world_view.terminal_selected.emit()
+        assert window._state.selected_terminal_a is True
+        assert window._state.selected_object_id is None
+        window._term_x.setValue(1200.0)
+        window._on_apply_terminal_edit()
+        assert window._world_config.terminal.x == 1200.0
+        assert window._state.terminal_a.world_x == 1200.0
+        window.close()
+
+    def test_beacon_select_and_edit_staged(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_target_selected(0)
+        assert window._state.selected_object_id == 0
+        assert window._state.selected_terminal_a is False
+        window._edit_traj.setCurrentText("figure_8")
+        window._edit_size.setValue(20.0)
+        window._on_apply_beacon_edit()
+        b = window._world_config.beacons[0]
+        assert b.trajectory == "figure_8"
+        assert b.size_px == 20.0
+        window.close()
+
+    def test_beacon_edit_live_engine(self, qapp):
+        import time
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.05)
+        window._on_target_selected(0)
+        window._edit_traj.setCurrentText("circular")
+        window._edit_size.setValue(15.0)
+        window._on_apply_beacon_edit()
+        eng = window._worker._sim_engine
+        t = [x for x in eng.get_state().targets if x.target_id == 0][0]
+        assert t.trajectory_type == "circular"
+        assert t.size_px == 15.0
+        window._worker.stop_run()
+        window.close()
+
+    def test_remove_clears_selection_ui(self, qapp):
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_target_selected(0)
+        window._on_remove_beacon()
+        assert window._state.selected_object_id is None
+        assert window._state.selected_terminal_a is False
+        assert window._state.targets_all == []
+        window.close()
+
+
+class TestMotionTrails:
+    """Camera sweep trail + target trails (ported from Astrionics review)."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_trails_populate_and_bounded(self, qapp):
+        import time
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._traj_combo.setCurrentText("circular")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(15):
+            qapp.processEvents()
+            time.sleep(0.05)
+        s = window._state
+        assert len(s.camera_trail) > 0
+        assert len(s.camera_trail) <= 120
+        assert len(s.targets_all) == 1
+        assert len(s.targets_all[0].trail) > 0
+        assert len(s.targets_all[0].trail) <= 120
+        assert all(len(p) == 3 for p in s.camera_trail)
+        window._worker.stop_run()
+        window.close()
+
+    def test_trails_cleared_on_restart(self, qapp):
+        import time
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.05)
+        assert len(window._state.camera_trail) > 0
+        window._worker.stop_run()
+        window._on_start()
+        assert len(window._worker._camera_trail) == 0
+        assert window._worker._target_trails == {}
+        window._worker.stop_run()
+        window.close()
+
+    def test_world_view_paints_trails(self, qapp):
+        import time
+
+        from PySide6.QtGui import QPixmap
+
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.05)
+        window._navigate_to(0)
+        qapp.processEvents()
+        wv = window._setup_world_view
+        pm = QPixmap(max(wv.width(), 100), max(wv.height(), 100))
+        wv.render(pm)  # must not raise with trails present
+        window._state.show_trail = False
+        wv.render(pm)  # toggle-off path
+        window._worker.stop_run()
+        window.close()
+
+    def test_show_trail_checkbox_flows(self, qapp):
+        from fsoc_tracker.gui.controls import ControlPanel
+        panel = ControlPanel()
+        assert panel.get_config()["show_trail"] is True
+        panel._show_trail.setChecked(False)
+        assert panel.get_config()["show_trail"] is False
+        panel.close()
+
+
+class TestPerceptionBackendSwitch:
+    """Backend selector builds working detectors with safe fallback."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def _worker(self):
+        from fsoc_tracker.gui.worker import ProcessingWorker
+        return ProcessingWorker()
+
+    def test_ai_backend_loads_trained(self, qapp):
+        w = self._worker()
+        logs = []
+        w.log.connect(lambda lv, m: logs.append((lv, m)))
+        from fsoc_tracker.perception.config import PerceptionConfig
+        det = w._build_detector({"perception_backend": "ai"},
+                                PerceptionConfig.for_video())
+        assert det.name == "ai_heatmap_cnn"
+        assert det.model.trained is True
+        w.close() if hasattr(w, "close") else None
+
+    def test_hybrid_backend_ai_available(self, qapp):
+        w = self._worker()
+        from fsoc_tracker.perception.config import PerceptionConfig
+        det = w._build_detector({"perception_backend": "hybrid"},
+                                PerceptionConfig.for_video())
+        assert det.ai_available is True
+        import numpy as np
+        img = np.full((240, 320), 5, dtype=np.uint8)
+        yy, xx = np.ogrid[:240, :320]
+        img[(xx - 160) ** 2 + (yy - 120) ** 2 <= 25] = 230
+        r = det.detect(img, 0.0, 0)
+        assert r.status is not None
+
+    def test_unknown_backend_falls_back_classical(self, qapp):
+        w = self._worker()
+        from fsoc_tracker.perception.config import PerceptionConfig
+        det = w._build_detector({"perception_backend": "bogus"},
+                                PerceptionConfig())
+        assert det.name == "classical_bright_spot"
+
+    def test_default_backend_classical(self, qapp):
+        w = self._worker()
+        from fsoc_tracker.perception.config import PerceptionConfig
+        det = w._build_detector({}, PerceptionConfig())
+        assert det.name == "classical_bright_spot"
+
+    def test_apply_toggles_switches_backend_live(self, qapp):
+        import time
+        from fsoc_tracker.gui.main_window import MainWindow
+        window = MainWindow()
+        window._world_combo.setCurrentText("New empty world")
+        window._on_add_beacon()
+        window._on_start()
+        for _ in range(8):
+            qapp.processEvents()
+            time.sleep(0.05)
+        assert window._worker._detector.name == "classical_bright_spot"
+        window._worker.apply_runtime_toggles(
+            {"perception_backend": "hybrid", "kalman_enabled": True,
+             "ai_brain_enabled": True})
+        qapp.processEvents()
+        assert "hybrid" in window._worker._detector.name
+        window._worker.apply_runtime_toggles(
+            {"perception_backend": "classical", "kalman_enabled": True,
+             "ai_brain_enabled": True})
+        qapp.processEvents()
+        assert window._worker._detector.name == "classical_bright_spot"
+        window._worker.stop_run()
+        window.close()
+
+
+class TestVideoEndurance:
+    """Long-video robustness: transient read gaps must not kill tracking."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def _flaky_worker(self, qapp, fail_runs):
+        """Worker in VIDEO mode with scripted read-failure runs.
+
+        fail_runs: list of (start_step, length) frame-index ranges that
+        return None, simulating decoder hiccups on long files.
+        """
+        import numpy as np
+        from fsoc_tracker.core.interfaces import FrameSource
+        from fsoc_tracker.core.models import ColorModel, Frame, SourceType
+        from fsoc_tracker.gui.worker import ProcessingWorker
+
+        img = np.full((480, 640, 3), 5, dtype=np.uint8)
+        img[238:243, 318:323] = [230, 230, 230]
+
+        class FlakySource(FrameSource):
+            def __init__(self):
+                self.n = 0
+
+            def open(self):
+                pass
+
+            def is_open(self):
+                return True
+
+            def release(self):
+                pass
+
+            @property
+            def source_id(self):
+                return "flaky"
+
+            def read(self):
+                for start, length in fail_runs:
+                    if start <= self.n < start + length:
+                        self.n += 1
+                        return None
+                self.n += 1
+                return Frame(image=img.copy(), width=640, height=480,
+                             channels=3, color_model=ColorModel.BGR,
+                             source_id="flaky", source_type=SourceType.VIDEO,
+                             frame_index=self.n,
+                             timestamp_s=self.n / 30.0, nominal_fps=30.0)
+
+        w = ProcessingWorker()
+        w.configure({"mode": "video", "video_path": "flaky.mp4"})
+        w._init_pipeline()
+        w._source = FlakySource()
+        w._source.open()
+        w._ensure_tracking_pipeline()
+        w._running = True
+        return w
+
+    def test_transient_gaps_tolerated(self, qapp):
+        w = self._flaky_worker(qapp, [(50, 5), (120, 10)])
+        for _ in range(200):
+            w._run_one_step()
+            qapp.processEvents()
+        assert w._running is True
+        assert w._video_miss_streak == 0
+        assert w._frames_processed == 200 - 15
+        w.stop_run()
+        w.close() if hasattr(w, "close") else None
+
+    def test_sustained_failure_stops_cleanly(self, qapp):
+        w = self._flaky_worker(qapp, [(10, 1000)])
+        for _ in range(60):
+            w._run_one_step()
+            qapp.processEvents()
+        assert w._running is False
+        assert w._frames_processed == 10
+        w.close() if hasattr(w, "close") else None
+
+
+class TestEventLogRollover:
+    """Event widget stays live + bounded on long runs."""
+
+    @pytest.fixture
+    def qapp(self):
+        import sys
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+        return app
+
+    def test_rollover_keeps_displaying(self, qapp):
+        from fsoc_tracker.gui.event_log import EventLogPanel
+        from fsoc_tracker.gui.state import ApplicationViewState
+        panel = EventLogPanel()
+        s = ApplicationViewState()
+        for i in range(600):
+            s.add_event(f"msg-{i}", "INFO")
+        panel.update_state(s)
+        assert panel._text.document().blockCount() <= 500
+        first_blocks = panel._text.toPlainText()
+        for i in range(600, 610):
+            s.add_event(f"msg-{i}", "INFO")
+        panel.update_state(s)
+        text = panel._text.toPlainText()
+        assert "msg-609" in text
+        assert panel._text.document().blockCount() <= 500
+        panel.close()

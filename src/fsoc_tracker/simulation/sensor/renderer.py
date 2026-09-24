@@ -11,7 +11,6 @@ The renderer does NOT duplicate projection math.
 
 from __future__ import annotations
 
-
 import numpy as np
 
 from fsoc_tracker.simulation.camera.camera import VirtualCamera
@@ -81,7 +80,7 @@ class VirtualSensorRenderer:
         ground_truths: list[GroundTruth] = []
 
         for target in targets:
-            gt = self._render_target(image, camera, target, cfg)
+            gt = self._render_target(image, camera, target, cfg, frame_index)
             ground_truths.append(gt)
 
         if cfg.enable_psf and self._psf_kernel is not None:
@@ -111,10 +110,17 @@ class VirtualSensorRenderer:
         camera: VirtualCamera,
         target: WorldTargetState,
         cfg: SensorConfig,
+        frame_index: int = 0,
     ) -> GroundTruth:
         """Render a single target and return its ground truth."""
         world_pos = (target.x, target.y, target.z)
         proj = camera.project_world_point(world_pos)
+
+        # Temporal identity code (ON/OFF keying): "" = steady ON.
+        from fsoc_tracker.tracking.identity import code_bit_at
+        code_on = code_bit_at(getattr(target, "code", "") or "",
+                              frame_index, cfg.code_frames_per_bit)
+        eff_brightness = float(target.brightness) * code_on
 
         gt = GroundTruth(
             target_id=target.target_id,
@@ -143,7 +149,9 @@ class VirtualSensorRenderer:
                 gt.target_visible = True
                 gt.target_size_px = size_px
                 gt.target_bbox = self._compute_bbox(proj.pixel_x, proj.pixel_y, size_px)
-                deposit_beacon(image, proj.pixel_x, proj.pixel_y, size_px, target.brightness * cfg.beacon_peak_intensity, cfg)
+                if eff_brightness > 0:
+                    deposit_beacon(image, proj.pixel_x, proj.pixel_y, size_px, eff_brightness * cfg.beacon_peak_intensity, cfg,
+                                   shape_override=target.shape)
             else:
                 gt.visibility = TargetVisibility.OUTSIDE
                 gt.target_visible = False
@@ -152,7 +160,9 @@ class VirtualSensorRenderer:
             gt.target_visible = True
             gt.target_size_px = size_px
             gt.target_bbox = self._compute_bbox(proj.pixel_x, proj.pixel_y, size_px)
-            deposit_beacon(image, proj.pixel_x, proj.pixel_y, size_px, target.brightness * cfg.beacon_peak_intensity, cfg)
+            if eff_brightness > 0:
+                deposit_beacon(image, proj.pixel_x, proj.pixel_y, size_px, eff_brightness * cfg.beacon_peak_intensity, cfg,
+                               shape_override=target.shape)
 
         return gt
 
@@ -168,6 +178,8 @@ class VirtualSensorRenderer:
         MODE B (DISTANCE_BASED): Interface for future physical model.
         """
         if cfg.size_mode == SizeMode.FIXED:
+            if target.size_px is not None and target.size_px > 0:
+                return cfg.clamped_beacon_size(target.size_px)
             return cfg.clamped_beacon_size(cfg.beacon_default_size_px)
 
         angular_size_rad = np.arctan2(target.width, proj.depth)
@@ -273,7 +285,7 @@ def _apply_psf_localized(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     result = image.copy()
 
     ys, xs = np.where(mask)
-    for py, px in zip(ys, xs):
+    for py, px in zip(ys, xs, strict=True):
         patch = padded[py:py + kh, px:px + kw]
         result[py, px] = np.sum(patch * kernel)
 

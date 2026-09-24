@@ -206,13 +206,19 @@ deterministic_baseline`.
 ## 10. NumPy BeaconCNN (runtime visual model)
 
 - NAME: `BeaconCNN` (`ai/model.py`), NumPy inference (`ai/inference.py`)
-- PROVENANCE: **random** by default (`initialize→random`);
-  `set_weights→trained`. No auto-load; no `.npz` shipped.
-- DATASET: none shipped. TRAINED?: no (as deployed).
-- METRICS: none. BASELINE: classical detector. RUNTIME USE: opt-in
-  only, never default. LATENCY: NumPy forward, ms-scale (not measured
-  in production path — unused).
-- STATUS: **RANDOM / EXPERIMENTAL.** LIMITATIONS: untrained as shipped.
+- PROVENANCE: **trained** (`ai/train_beacon_cnn.py`: torch replica of
+  the exact numpy architecture, 4000 synthetic samples, 40 epochs,
+  exported weight-for-weight to `artifacts/models/beacon-numpy-v1/`,
+  parity 6e-06, receipt with metrics).
+- DATASET: synthetic (`ai/dataset.py`, seed 42). METRICS: 17/20 hits
+  @~6 px synthetic probes, 0 FP on empties; 98.8% detection but
+  297 px RMSE on the noisy 640×480 reference (fires on noise
+  structure) vs 0.32 px classical. BASELINE: classical detector.
+- RUNTIME USE: opt-in `ai`/`hybrid` backends with trained-or-fallback
+  contract (missing weights → classical + warning); vectorized
+  conv/pool + bilinear resize (≈3 ms steady-state).
+- STATUS: **TRAINED / EXPERIMENTAL.** LIMITATIONS: coarse 1/8
+  heatmap localization; noise-fragile; classical default retained.
 
 ## 11. Disturbance MLPs (disturbance-v1: classifier / controller / predictor)
 
@@ -286,7 +292,7 @@ deterministic_baseline`.
 | Situation rules | deterministic_baseline | PRODUCTION |
 | Learned situation npz | trained | STALE, QUARANTINED |
 | Visual TinyVisualBeaconNet | trained | EXPERIMENTAL, not wired |
-| NumPy BeaconCNN | random | EXPERIMENTAL |
+| NumPy BeaconCNN | trained (beacon-numpy-v1) | EXPERIMENTAL, wired with fallback |
 | Disturbance MLPs ×3 | trained | UNUSED |
 | Failure predictor | trained artifact / heuristic at runtime | NOT LOADED |
 

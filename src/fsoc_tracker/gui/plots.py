@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-
 from fsoc_tracker.gui.state import ApplicationViewState
 from fsoc_tracker.gui.theme import Colors
 
 try:
-    from PySide6.QtCore import Qt, QPointF, QRectF
-    from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPainterPath
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
     from PySide6.QtWidgets import QFrame, QVBoxLayout
 except ImportError:
-    from PyQt5.QtCore import Qt, QPointF, QRectF  # type: ignore
-    from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPainterPath  # type: ignore
+    from PyQt5.QtCore import QPointF, QRectF, Qt  # type: ignore
+    from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen  # type: ignore
     from PyQt5.QtWidgets import QFrame, QVBoxLayout  # type: ignore
 
 

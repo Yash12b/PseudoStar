@@ -43,7 +43,9 @@ class MetricsCollector:
         self._acquisition_done: bool = False
         self._stable_acquisition_s: float | None = None
         self._loss_start_s: float | None = None
+        self._reappear_s: float | None = None
         self._reacq_times: list[float] = []
+        self._reacq_from_reappearance: list[float] = []
         self._loss_events: list[dict[str, Any]] = []
         self._acq_count: int = 0
         self._processing_times: list[float] = []
@@ -84,6 +86,7 @@ class MetricsCollector:
         if self._prev_locked and not locked:
             self._events.append({"type": "loss", "timestamp_s": ts, "frame_index": fm.frame_index})
             self._loss_start_s = ts
+            self._reappear_s = None
             self._loss_events.append({"start_s": ts, "frame_index": fm.frame_index})
         elif not self._prev_locked and locked:
             self._lock_start_time = ts
@@ -95,6 +98,8 @@ class MetricsCollector:
             if self._loss_start_s is not None:
                 reacq_dur = ts - self._loss_start_s
                 self._reacq_times.append(reacq_dur)
+                if self._reappear_s is not None:
+                    self._reacq_from_reappearance.append(ts - self._reappear_s)
                 self._events.append({
                     "type": "reacquired",
                     "timestamp_s": ts,
@@ -102,6 +107,11 @@ class MetricsCollector:
                     "duration_s": reacq_dur,
                 })
                 self._loss_start_s = None
+                self._reappear_s = None
+        # First GT-visible frame inside a loss episode marks reappearance.
+        if (self._loss_start_s is not None and self._reappear_s is None
+                and fm.true_x is not None and fm.true_y is not None):
+            self._reappear_s = ts
 
         # Frame duration is the only valid duration source for both offline
         # media and live input. Wall-clock processing time is unrelated to
@@ -187,6 +197,60 @@ class MetricsCollector:
             within = sum(1 for e in errors if e <= self._threshold_px)
             tracking.within_threshold_percent = (within / len(errors)) * 100.0
 
+        from fsoc_tracker.benchmark.models import DetectionMetrics
+        detection = DetectionMetrics()
+        for f in self._frames:
+            if f.true_x is None or f.true_y is None:
+                # No ground truth: judgeable only as ghost or quiet.
+                if f.detected:
+                    detection.false_positives += 1
+                else:
+                    detection.true_negatives += 1
+                detection.evaluated_frames += 1
+                continue
+            detection.evaluated_frames += 1
+            if f.detected and f.error_px is not None and f.error_px <= self._threshold_px:
+                detection.true_positives += 1
+            elif f.detected:
+                detection.false_positives += 1
+            else:
+                detection.false_negatives += 1
+        denom_p = detection.true_positives + detection.false_positives
+        denom_r = detection.true_positives + detection.false_negatives
+        if denom_p > 0:
+            detection.precision = detection.true_positives / denom_p
+        if denom_r > 0:
+            detection.recall = detection.true_positives / denom_r
+
+        from fsoc_tracker.benchmark.models import MOTMetrics
+        mot = MOTMetrics()
+        gt_frames = [f for f in self._frames
+                     if f.true_x is not None and f.true_y is not None]
+        mot.gt_frames = len(gt_frames)
+        if gt_frames:
+            tp_errs = [f.error_px for f in gt_frames
+                       if f.detected and f.error_px is not None
+                       and f.error_px <= self._threshold_px]
+            if tp_errs:
+                mot.motp_px = float(sum(tp_errs) / len(tp_errs))
+            switches = 0
+            last_id = None
+            for f in gt_frames:
+                matched = (f.detected and f.error_px is not None
+                           and f.error_px <= self._threshold_px)
+                if matched:
+                    if last_id is not None and f.track_id != last_id:
+                        switches += 1
+                    last_id = f.track_id
+            mot.id_switches = switches
+            mot.mota = 1.0 - (detection.false_negatives
+                              + detection.false_positives
+                              + switches) / len(gt_frames)
+            idtp = detection.true_positives
+            idf_denom = 2 * idtp + detection.false_positives + detection.false_negatives
+            if idf_denom > 0:
+                mot.idf1 = 2 * idtp / idf_denom
+
         evaluable = len(frames_with_gt)
         loss = LossMetrics(
             loss_event_count=len(self._loss_events),
@@ -212,6 +276,10 @@ class MetricsCollector:
             reacq.median_s = float(np.median(ra))
             reacq.max_s = float(np.max(ra))
             reacq.p95_s = float(np.percentile(ra, 95))
+        if self._reacq_from_reappearance:
+            reacq.times_from_reappearance = list(self._reacq_from_reappearance)
+            reacq.mean_from_reappearance_s = float(
+                np.mean(np.array(self._reacq_from_reappearance)))
 
         perf = PerformanceMetrics(frames_processed=len(self._frames))
         wall = self._wall_end - self._wall_start if self._wall_end > self._wall_start else 0.0
@@ -266,6 +334,8 @@ class MetricsCollector:
             frame_count=len(self._frames),
             acquisition=acq,
             tracking=tracking,
+            detection=detection,
+            mot=mot,
             loss=loss,
             reacquisition=reacq,
             latency=latency,

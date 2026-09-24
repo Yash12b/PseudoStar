@@ -132,6 +132,7 @@ class FrameMetrics:
     frame_index: int = 0
     timestamp_s: float = 0.0
     dt: float = 0.0
+    track_id: int = -1
     source_fps: float | None = None
     processing_time_ms: float = 0.0
     perception_time_ms: float = 0.0
@@ -297,6 +298,43 @@ class TrackingMetricsSummary:
 
 
 @dataclass
+class DetectionMetrics:
+    """Per-frame detection classification against ground truth.
+
+    TP: detected, target visible, error within threshold.
+    FP: detected while target absent, or error above threshold.
+    FN: target visible but nothing detected.
+    TN: target absent and nothing detected.
+    Frames without ground truth are skipped (unjudgeable).
+    """
+
+    true_positives: int = 0
+    false_positives: int = 0
+    false_negatives: int = 0
+    true_negatives: int = 0
+    precision: float | None = None
+    recall: float | None = None
+    evaluated_frames: int = 0
+
+
+@dataclass
+class MOTMetrics:
+    """Multi-object-tracking style scores for the single target.
+
+    MOTA = 1 - (FN + FP + IDSW) / GT_frames (py-motmetrics definition;
+    IDSW counts track-ID changes while the target stays visible).
+    MOTP = mean matched distance over TP frames.
+    IDF1 = 2TP / (2TP + FP + FN) (identity F1 for one target).
+    """
+
+    mota: float | None = None
+    motp_px: float | None = None
+    idf1: float | None = None
+    id_switches: int = 0
+    gt_frames: int = 0
+
+
+@dataclass
 class LossMetrics:
     loss_event_count: int = 0
     loss_rate_percent: float | None = None
@@ -316,6 +354,10 @@ class ReacquisitionMetrics:
     p95_s: float | None = None
     total_events: int = 0
     failed_reacquisitions: int = 0
+    # Honest PS reading: time from target REAPPEARANCE (GT visible again)
+    # to re-lock, excluding the outage itself (covered by `times`).
+    times_from_reappearance: list[float] = field(default_factory=list)
+    mean_from_reappearance_s: float | None = None
 
 
 @dataclass
@@ -383,6 +425,8 @@ class BenchmarkResult:
     frame_count: int = 0
     acquisition: AcquisitionMetrics = field(default_factory=AcquisitionMetrics)
     tracking: TrackingMetricsSummary = field(default_factory=TrackingMetricsSummary)
+    detection: DetectionMetrics = field(default_factory=DetectionMetrics)
+    mot: MOTMetrics = field(default_factory=MOTMetrics)
     loss: LossMetrics = field(default_factory=LossMetrics)
     reacquisition: ReacquisitionMetrics = field(default_factory=ReacquisitionMetrics)
     latency: PipelineLatency = field(default_factory=PipelineLatency)
@@ -407,6 +451,7 @@ class BenchmarkResult:
 
         acq = self.acquisition
         trk = self.tracking
+        det = self.detection
         los = self.loss
         rea = self.reacquisition
         perf = self.performance
@@ -423,6 +468,17 @@ class BenchmarkResult:
                          f"{trk.within_threshold_percent:.1f}%" if trk.within_threshold_percent is not None else "N/A"))
         lines.append(row("Target loss",
                          f"{los.loss_rate_percent:.1f}%" if los.loss_rate_percent is not None else "N/A"))
+        lines.append(row("Precision",
+                         f"{det.precision:.3f}" if det.precision is not None else "N/A"))
+        lines.append(row("Recall",
+                         f"{det.recall:.3f}" if det.recall is not None else "N/A"))
+        mot = self.mot
+        lines.append(row("MOTA",
+                         f"{mot.mota:.3f}" if mot.mota is not None else "N/A"))
+        lines.append(row("MOTP",
+                         f"{mot.motp_px:.2f}px" if mot.motp_px is not None else "N/A"))
+        lines.append(row("IDF1",
+                         f"{mot.idf1:.3f}" if mot.idf1 is not None else "N/A"))
         lines.append(row("Lock retention",
                          f"{los.lock_retention_percent:.1f}%" if los.lock_retention_percent is not None else "N/A"))
         lines.append(row("Re-acquisition",

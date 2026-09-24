@@ -11,20 +11,20 @@
   "test_samples": 900,
   "seed": 42,
   "motion": {
-    "train_rmse_euclidean": 0.9524235319918556,
-    "val_rmse_euclidean": 0.4591104752866253,
-    "test_rmse_euclidean": 0.3689829328551301,
-    "train_p95_euclidean": 2.146684517711298,
-    "val_p95_euclidean": 0.6692446807858036,
-    "test_p95_euclidean": 0.27844535089797684
+    "train_rmse_euclidean": 0.9524235319918557,
+    "val_rmse_euclidean": 0.45911047528664395,
+    "test_rmse_euclidean": 0.3689829328551086,
+    "train_p95_euclidean": 2.146684517711129,
+    "val_p95_euclidean": 0.6692446807858115,
+    "test_p95_euclidean": 0.27844535089790445
   },
   "situation": {
-    "train_accuracy": 0.9954666666666667,
-    "val_accuracy": 1.0,
-    "test_accuracy": 1.0
+    "train_accuracy": 0.9696,
+    "val_accuracy": 0.9986666666666667,
+    "test_accuracy": 0.9733333333333334
   },
   "policy": {
-    "train_accuracy": 0.9954666666666667,
+    "train_accuracy": 0.9928,
     "val_accuracy": 1.0,
     "test_accuracy": 1.0
   }

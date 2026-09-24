@@ -1,27 +1,18 @@
 {
-  "dataset_version": "mission-observable-v1",
-  "model_versions": {
-    "motion": "MotionNet-linear-v1",
-    "situation": "SituationNet-linear-v1",
-    "policy": "PolicyNet-linear-v1"
-  },
-  "samples": 4000,
-  "seed": 42,
-  "split": {
-    "train_seed": 42,
-    "validation_seed": 1000042,
-    "test_seed": 2000042,
-    "validation_samples": 1000,
-    "test_samples": 1000
-  },
-  "motion_rmse_euclidean": 6.111631132594511e-10,
-  "motion_p95_euclidean": 8.955786557204722e-10,
-  "situation_train_accuracy": 0.81125,
-  "policy_train_accuracy": 0.81125,
-  "motion_validation_rmse_euclidean": 6.098179356591353e-10,
-  "motion_test_rmse_euclidean": 6.178120058317079e-10,
-  "situation_validation_accuracy": 0.781,
-  "situation_test_accuracy": 0.803,
-  "policy_validation_accuracy": 0.781,
-  "policy_test_accuracy": 0.803
+  "model": "TemporalBeaconPredictor",
+  "feature_dim": 15,
+  "hidden_dim": 32,
+  "horizons_s": [
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5
+  ],
+  "sequence_length": 20,
+  "epochs": 30,
+  "best_val_loss": 18.713058471679688,
+  "train_samples": 25,
+  "val_samples": 5,
+  "seed": 42
 }

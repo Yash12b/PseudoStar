@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 
-
 class ROIState(Enum):
     """ROI adaptive state."""
     STABLE = auto()

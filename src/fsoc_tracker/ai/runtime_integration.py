@@ -17,9 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-from fsoc_tracker.ai.runtime_predictor import TemporalPrediction
 from fsoc_tracker.ai.runtime_features import ObservableFeatures
+from fsoc_tracker.ai.runtime_predictor import TemporalPrediction
 
 
 @dataclass

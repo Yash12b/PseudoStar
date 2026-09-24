@@ -16,6 +16,7 @@ def generate_candidates(
     image: np.ndarray,
     background_level: float,
     config: PerceptionConfig,
+    max_candidates: int | None = None,
 ) -> list[np.ndarray]:
     """Generate binary candidate masks from the preprocessed image.
 
@@ -23,6 +24,9 @@ def generate_candidates(
         image: Preprocessed grayscale image.
         background_level: Estimated background intensity.
         config: Perception configuration.
+        max_candidates: Cap on returned regions (largest areas first).
+            Defaults to ``config.max_candidates``. Pass 0/None... note
+            None means "use config", while a positive int overrides it.
 
     Returns:
         List of binary masks, one per candidate region.
@@ -39,18 +43,23 @@ def generate_candidates(
     if config.morphology_enabled:
         mask = _clean_mask(mask, config)
 
+    cap = config.max_candidates if max_candidates is None else max_candidates
+
     # Use the statistics-producing OpenCV call directly. The previous
     # implementation first computed connected components and then computed
     # them again with ``connectedComponentsWithStats`` on every frame.
     try:
         import cv2
         num_labels2, labels2, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        candidates = []
+        areas: list[tuple[float, int]] = []
         for label_id in range(1, num_labels2):
             area = float(stats[label_id, cv2.CC_STAT_AREA])
             if config.min_candidate_area <= area <= config.max_candidate_area:
-                region_mask = (labels2 == label_id)
-                candidates.append(region_mask)
+                areas.append((area, label_id))
+        # Largest-first + cap: genuine beacons outrank noise specks, and
+        # per-candidate feature extraction stays bounded under floods.
+        areas.sort(key=lambda t: t[0], reverse=True)
+        candidates = [(labels2 == label_id) for _, label_id in areas[:cap]]
         return candidates
     except ImportError:
         labels, num_labels = _connected_components(mask)
@@ -66,9 +75,9 @@ def generate_candidates(
         region_mask = (labels == label_id)
         area = float(np.sum(region_mask))
         if config.min_candidate_area <= area <= config.max_candidate_area:
-            candidates.append(region_mask)
-
-    return candidates
+            candidates.append((area, region_mask))
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    return [m for _, m in candidates[:cap]]
 
 
 def _threshold(
@@ -142,39 +151,49 @@ def extract_features(
     Returns:
         CandidateFeatures with all computed properties.
     """
-    img = image.astype(np.float64)
     m = mask.astype(bool)
-
     if not np.any(m):
         return CandidateFeatures()
 
     ys, xs = np.where(m)
     area = float(len(ys))
 
-    centroid_x = float(np.mean(xs))
-    centroid_y = float(np.mean(ys))
-
     x_min, x_max = int(np.min(xs)), int(np.max(xs))
     y_min, y_max = int(np.min(ys)), int(np.max(ys))
+
+    # Crop to the candidate bbox first: identical arithmetic on the same
+    # pixel set, but perimeter/erosion/centroid no longer scan the full
+    # frame per candidate (the noise-flood bottleneck). A 1 px margin
+    # keeps edge erosion results identical to full-frame computation.
+    H, W = image.shape[:2]
+    cx1, cy1 = max(0, x_min - 1), max(0, y_min - 1)
+    cx2, cy2 = min(W, x_max + 2), min(H, y_max + 2)
+    img = image.astype(np.float64)[cy1:cy2, cx1:cx2]
+    mc = m[cy1:cy2, cx1:cx2]
+
+    cys, cxs = np.where(mc)
+    centroid_x = float(np.mean(cxs)) + cx1
+    centroid_y = float(np.mean(cys)) + cy1
+
     bbox = (x_min, y_min, x_max, y_max)
 
     width = float(x_max - x_min + 1)
     height = float(y_max - y_min + 1)
     aspect_ratio = width / height if height > 0 else 1.0
 
-    perimeter = _compute_perimeter(m)
+    perimeter = _compute_perimeter(mc)
 
     if perimeter > 0:
         circularity = 4.0 * np.pi * area / (perimeter * perimeter)
     else:
         circularity = 0.0
 
-    candidate_pixels = img[m]
+    candidate_pixels = img[mc]
     mean_intensity = float(np.mean(candidate_pixels)) if len(candidate_pixels) > 0 else 0.0
     max_intensity = float(np.max(candidate_pixels)) if len(candidate_pixels) > 0 else 0.0
     integrated_intensity = float(np.sum(candidate_pixels))
 
-    local_contrast = _compute_local_contrast(img, m, bbox)
+    local_contrast = _compute_local_contrast(image.astype(np.float64), m, bbox)
 
     return CandidateFeatures(
         centroid_x=centroid_x,

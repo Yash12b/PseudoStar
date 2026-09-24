@@ -135,6 +135,11 @@ class DatasetConfig(BaseModel):
     fog_prob: float = Field(default=0.3, ge=0.0, le=1.0)
     haze_prob: float = Field(default=0.3, ge=0.0, le=1.0)
     low_light_prob: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Heavy-noise training range (PS maxima). Defaults preserve the
+    # legacy mild range; raise for robustness training.
+    noise_sigma_max: float = Field(default=15.0, ge=0.0, le=50.0)
+    salt_pepper_max: float = Field(default=0.1, ge=0.0, le=0.5)
+    poisson_prob: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # Timing
     nominal_fps: float = Field(default=30.0, gt=0,

@@ -77,8 +77,20 @@ def detect_beacon(
             preprocessed.background_level,
             fallback_config,
         )
+    # Second fallback: even 80th percentile can miss video beacons
+    # whose intensity is near the scene median (e.g. lit indoor scenes).
+    if not candidates and config.threshold_mode.value == "percentile":
+        fallback2_config = config.model_copy(update={
+            "percentile_value": 50.0,
+        })
+        candidates = generate_candidates(
+            preprocessed.image,
+            preprocessed.background_level,
+            fallback2_config,
+        )
 
     result.diagnostics["num_candidates_raw"] = len(candidates)
+    result.diagnostics["candidate_cap"] = config.max_candidates
     result.diagnostics["background_level"] = preprocessed.background_level
     result.diagnostics["noise_estimate"] = preprocessed.noise_estimate
 
@@ -90,7 +102,10 @@ def detect_beacon(
     result.status = PerceptionStatus.CANDIDATE
 
     scored_candidates: list[tuple[float, BeaconDetection]] = []
-    for mask in candidates:
+    # Masks arrive largest-first: fully process only the top-K so
+    # noise-flood frames stay within budget; clean frames (< K) are
+    # unaffected.
+    for mask in candidates[:config.max_scored_candidates]:
         features = extract_features(preprocessed.image, mask)
         detection = _features_to_detection(
             features, config, timestamp_s, frame_index,
@@ -114,9 +129,17 @@ def detect_beacon(
 
     best_score, best_detection = scored_candidates[0]
 
+    # Every candidate meeting the perception threshold is a confirmed
+    # detection — not just the primary. The tracker's association stage
+    # needs the full above-threshold set to choose among candidates;
+    # flagging only the winner collapsed association to a single
+    # candidate everywhere (benchmark and production alike).
+    for sc, det in scored_candidates:
+        if sc >= config.min_confidence:
+            det.detected = True
+            det.visibility_state = PerceptionStatus.DETECTED
+
     if best_score >= config.min_confidence:
-        best_detection.detected = True
-        best_detection.visibility_state = PerceptionStatus.DETECTED
         result.primary_detection = best_detection
         result.status = PerceptionStatus.DETECTED
     else:

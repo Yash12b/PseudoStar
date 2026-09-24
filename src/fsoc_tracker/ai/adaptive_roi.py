@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-
 class ROISizeMode(str, Enum):
     """How ROI size is determined."""
     FIXED = "fixed"

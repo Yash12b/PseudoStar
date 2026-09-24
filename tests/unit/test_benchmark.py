@@ -32,13 +32,13 @@ import json
 import math
 import tempfile
 import time
+from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
 
-from fsoc_tracker.benchmark.collector import MetricsCollector, FrameMetrics
+from fsoc_tracker.benchmark.collector import FrameMetrics, MetricsCollector
 from fsoc_tracker.benchmark.engine import BenchmarkEngine
 from fsoc_tracker.benchmark.export import export_csv, export_event_log, export_json
 from fsoc_tracker.benchmark.ground_truth import (
@@ -66,11 +66,10 @@ from fsoc_tracker.benchmark.profiler import PerformanceProfiler
 from fsoc_tracker.benchmark.report import generate_html_report
 from fsoc_tracker.benchmark.run import ci_regression_benchmark, run_scenario
 from fsoc_tracker.benchmark.video_source import VideoBenchmarkSource
-from fsoc_tracker.pipeline.sources import VideoSource
 from fsoc_tracker.core.models import ColorModel, Frame, SourceType
 from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+from fsoc_tracker.pipeline.sources import VideoSource
 from fsoc_tracker.tracking.tracker import KalmanTracker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -786,13 +785,12 @@ class TestPlots:
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             plots = generate_plots(r, frames, tmpdir)
-            try:
-                import matplotlib
+            if find_spec("matplotlib") is None:
+                assert len(plots) == 0
+            else:
                 assert len(plots) > 0
                 for p in plots:
                     assert Path(p).exists()
-            except ImportError:
-                assert len(plots) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1108,6 +1106,7 @@ class TestBenchmarkMethods:
 
     def test_stale_policy_labels_unavailable(self, tmp_path, monkeypatch):
         import shutil
+
         from fsoc_tracker.ai.learned import LearnedFeatureClassifier
         from fsoc_tracker.benchmark.methods import check_method_availability
         shutil.copy(
@@ -1194,6 +1193,26 @@ class TestGuiRunner:
             assert first.rmse_px == second.rmse_px
             assert first.repro_command == second.repro_command
 
+    def test_repro_command_roundtrips_tuning_flags(self):
+        from fsoc_tracker.benchmark.runner import (
+            BenchmarkRunConfig,
+            BenchmarkMode,
+            build_repro_command,
+        )
+        base = build_repro_command(BenchmarkRunConfig(
+            mode=BenchmarkMode.KALMAN_EXPERT))
+        assert "--assoc-identity" not in base
+        full = build_repro_command(BenchmarkRunConfig(
+            mode=BenchmarkMode.KALMAN_EXPERT, assoc_gate_px=60.0,
+            assoc_method="mahalanobis", assoc_appearance=8.0,
+            assoc_identity=40.0, identity_code="10110010",
+            lead_compensation=True, lead_time_s=0.2))
+        for flag in ("--assoc-gate-px 60.0", "--assoc-method mahalanobis",
+                     "--assoc-appearance 8.0", "--assoc-identity 40.0",
+                     "--identity-code 10110010", "--lead",
+                     "--lead-time 0.2"):
+            assert flag in full
+
     def test_full_ai_mission_smoke(self):
         from fsoc_tracker.benchmark.runner import BenchmarkMode, BenchmarkRunner
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1220,7 +1239,6 @@ class TestGuiRunner:
             assert metrics.frames_processed < 25
 
     def test_export_run_logs(self):
-        from fsoc_tracker.benchmark.export import export_run_csv, export_run_json
         from fsoc_tracker.benchmark.runner import BenchmarkMode, BenchmarkRunner
         with tempfile.TemporaryDirectory() as tmpdir:
             metrics = BenchmarkRunner().run(
@@ -1259,8 +1277,9 @@ class TestMultiSeedAggregation:
             assert os.path.exists(agg["aggregate_json_path"])
 
     def test_multi_seed_benchmark_runs(self):
-        from fsoc_tracker.cli.run_benchmark import run_sim_benchmark
         import tempfile
+
+        from fsoc_tracker.cli.run_benchmark import run_sim_benchmark
         with tempfile.TemporaryDirectory() as tmp:
             result = run_sim_benchmark(
                 "kalman_expert", "nominal", 42, 30, tmp, seeds=[42, 43])
@@ -1269,10 +1288,79 @@ class TestMultiSeedAggregation:
         assert result["frames_processed"] == 60
 
     def test_assoc_override_runs(self):
-        from fsoc_tracker.cli.run_benchmark import run_sim_benchmark
         import tempfile
+
+        from fsoc_tracker.cli.run_benchmark import run_sim_benchmark
         with tempfile.TemporaryDirectory() as tmp:
             result = run_sim_benchmark(
                 "kalman_expert", "nominal", 42, 10, tmp,
                 assoc_gate_px=40.0, assoc_method="mahalanobis")
         assert result["frames_processed"] == 10
+
+
+class TestReacquisitionFromReappearance:
+    """Reacquisition measured from GT reappearance, not loss start."""
+
+    def _fm(self, idx, ts, locked, tx=None):
+        from fsoc_tracker.benchmark.models import FrameMetrics
+        return FrameMetrics(frame_index=idx, timestamp_s=ts,
+                            lock_status=locked, true_x=tx,
+                            true_y=0.0 if tx is not None else None)
+
+    def test_reappearance_metric(self):
+        from fsoc_tracker.benchmark.collector import MetricsCollector
+        c = MetricsCollector()
+        # locked 0.0-0.2, outage 0.2-1.0 (no GT), reappear 1.0, relock 1.2
+        frames = [self._fm(0, 0.0, True, 320.0), self._fm(1, 0.1, True, 321.0),
+                  self._fm(2, 0.2, True, 322.0), self._fm(3, 0.3, False, None),
+                  self._fm(30, 1.0, False, 350.0), self._fm(31, 1.1, False, 351.0),
+                  self._fm(32, 1.2, True, 352.0)]
+        for fm in frames:
+            c.record_frame(fm)
+        assert c._reacq_times and abs(c._reacq_times[0] - 0.9) < 1e-9
+        assert c._reacq_from_reappearance
+        assert abs(c._reacq_from_reappearance[0] - 0.2) < 1e-9
+
+
+class TestDetectionMetrics:
+    """Per-frame TP/FP/FN/TN classification in the collector."""
+
+    def _fm(self, idx, ts, detected, err, tx=320.0):
+        from fsoc_tracker.benchmark.models import FrameMetrics
+        return FrameMetrics(frame_index=idx, timestamp_s=ts,
+                            lock_status=detected, detected=detected,
+                            true_x=tx, true_y=240.0, error_px=err)
+
+    def test_precision_recall_perfect(self):
+        from fsoc_tracker.benchmark.collector import MetricsCollector
+        c = MetricsCollector()
+        for i in range(10):
+            c.record_frame(self._fm(i, i / 30, True, 2.0))
+        r = c.build_result()
+        assert r.detection.true_positives == 10
+        assert r.detection.precision == 1.0
+        assert r.detection.recall == 1.0
+
+    def test_false_negatives_and_ghosts(self):
+        from fsoc_tracker.benchmark.collector import MetricsCollector
+        from fsoc_tracker.benchmark.models import FrameMetrics
+        c = MetricsCollector()
+        for i in range(5):
+            c.record_frame(self._fm(i, i / 30, False, None))
+        for i in range(5, 8):
+            c.record_frame(FrameMetrics(
+                frame_index=i, timestamp_s=i / 30, lock_status=False,
+                detected=True, true_x=None, true_y=None, error_px=None))
+        r = c.build_result()
+        assert r.detection.false_negatives == 5
+        assert r.detection.false_positives == 3
+        assert r.detection.true_negatives == 0
+        assert r.detection.recall == 0.0
+
+    def test_wrong_target_is_fp(self):
+        from fsoc_tracker.benchmark.collector import MetricsCollector
+        c = MetricsCollector()
+        c.record_frame(self._fm(0, 0.0, True, 50.0))
+        r = c.build_result()
+        assert r.detection.false_positives == 1
+        assert r.detection.true_positives == 0

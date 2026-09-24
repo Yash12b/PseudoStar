@@ -1,6 +1,6 @@
 # FSOC Tracker — runtime dependencies.
 # Mirrors pyproject.toml [project.dependencies] + desktop + full extras,
-# pinned to versions verified by the test suite (1280+ tests).
+# pinned to versions verified by the test suite (1420+ tests).
 # Install:  pip install -r requirements.txt
 # Dev tools: pip install -r requirements-dev.txt
 

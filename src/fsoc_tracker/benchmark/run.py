@@ -16,7 +16,12 @@ from fsoc_tracker.benchmark.ground_truth import (
     GroundTruthProvider,
     NullGroundTruthProvider,
 )
-from fsoc_tracker.benchmark.models import BenchmarkResult, BenchmarkScenario, BenchmarkSession, BenchmarkMode
+from fsoc_tracker.benchmark.models import (
+    BenchmarkMode,
+    BenchmarkResult,
+    BenchmarkScenario,
+    BenchmarkSession,
+)
 from fsoc_tracker.benchmark.plots import generate_plots
 from fsoc_tracker.benchmark.report import generate_html_report
 from fsoc_tracker.core.interfaces import FrameSource

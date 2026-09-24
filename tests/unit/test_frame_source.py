@@ -130,8 +130,10 @@ class TestSourceIsolation:
 
     def test_video_source_has_no_engine(self):
         import tempfile
+
         import cv2
         import numpy as np
+
         from fsoc_tracker.pipeline.sources import VideoSource
         tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
         tmp.close()

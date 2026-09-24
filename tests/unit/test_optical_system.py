@@ -1,11 +1,13 @@
 import pytest
-from fsoc_tracker.simulation.terminal import TerminalState
+
+from fsoc_tracker.simulation.communication import CommunicationEngine, MessageStatus
 from fsoc_tracker.simulation.optical_link import (
-    OpticalLinkEngine,
     LinkStatus,
+    OpticalLinkEngine,
     atmospheric_attenuation_from_disturbance,
 )
-from fsoc_tracker.simulation.communication import CommunicationEngine, MessageStatus
+from fsoc_tracker.simulation.terminal import TerminalState
+
 
 def test_terminal_optical_axis():
     term = TerminalState(x=0, y=0, z=0, yaw_deg=0, pitch_deg=0)

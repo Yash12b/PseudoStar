@@ -8,15 +8,15 @@ Never uses ground truth.
 from __future__ import annotations
 
 import math
+from collections import deque
 from typing import Any
-
 
 from fsoc_tracker.core.time import compute_dt
 from fsoc_tracker.perception.models import BeaconDetection
 from fsoc_tracker.tracking.association import associate_nearest
 from fsoc_tracker.tracking.config import TrackerConfig
 from fsoc_tracker.tracking.kalman import KalmanFilter2D
-from fsoc_tracker.tracking.state import TrackEvent, TrackState, TrackingEvent, TrackingState
+from fsoc_tracker.tracking.state import TrackEvent, TrackingEvent, TrackingState, TrackState
 from fsoc_tracker.tracking.state_machine import TrackStateMachine
 
 
@@ -44,6 +44,20 @@ class KalmanTracker:
         self._consecutive_misses: int = 0
         self._total_detections: int = 0
         self._total_misses: int = 0
+        # BYTE stage-2 rescue state (revive with sub-threshold detections).
+        self._low_dets: list = []
+        self._consecutive_rescues: int = 0
+        self._rescued_this_frame: bool = False
+        self._appear_area: float | None = None
+        self._appear_intensity: float | None = None
+        self._last_quality: float = 0.0
+        # Coded identity: proximity-chained intensity histories decoded
+        # against the operator-configured expected code. Built only when
+        # a code is configured; otherwise identically absent.
+        from fsoc_tracker.tracking.identity import CodeIdentityTracker
+        self._identity: CodeIdentityTracker | None = None
+        self._last_identity_match: float = 0.5
+        self._build_identity()
 
         self._acquisition_start_time_s: float = 0.0
         self._acquisition_success_time_s: float = 0.0
@@ -51,7 +65,9 @@ class KalmanTracker:
         self._loss_time_s: float = 0.0
         self._reacquisition_time_s: float = 0.0
 
-        self._events: list[TrackingEvent] = []
+        # Bounded ring: transitions are rare, but a day-long run must
+        # never grow this list without limit. Readers get a list copy.
+        self._events: deque[TrackingEvent] = deque(maxlen=512)
         self._last_raw_detection: BeaconDetection | None = None
         self._has_measurement: bool = False
 
@@ -104,6 +120,24 @@ class KalmanTracker:
 
         # Filter valid detections
         valid_dets = [d for d in detections if d.detected and d.confidence >= self._config.minimum_detection_confidence]
+        # Sub-threshold pool for the rescue pass (revive, never birth).
+        floor = self._config.rescue_confidence_floor
+        min_conf = self._config.minimum_detection_confidence
+        self._low_dets = [d for d in detections
+                          if floor <= d.confidence < min_conf]
+        self._rescued_this_frame = False
+
+        # Coded identity observes the full candidate list every frame
+        # (independent of association outcome). The step counter aligns
+        # with the renderer's frame index; explicit metadata resyncs it.
+        if self._identity is not None:
+            frame_idx: int | None = None
+            if isinstance(frame_metadata, dict):
+                try:
+                    frame_idx = int(frame_metadata.get("frame_index"))
+                except (TypeError, ValueError):
+                    frame_idx = None
+            self._identity.update(detections, frame_index=frame_idx)
 
         if current_state == TrackState.NO_TRACK:
             return self._handle_no_track(valid_dets, timestamp_s)
@@ -170,6 +204,11 @@ class KalmanTracker:
         self._consecutive_misses = 0
         self._total_detections = 0
         self._total_misses = 0
+        self._low_dets = []
+        self._consecutive_rescues = 0
+        self._rescued_this_frame = False
+        self._appear_area = None
+        self._appear_intensity = None
 
         self._acquisition_start_time_s = 0.0
         self._acquisition_success_time_s = 0.0
@@ -180,6 +219,29 @@ class KalmanTracker:
         self._events.clear()
         self._last_raw_detection = None
         self._has_measurement = False
+        self._last_identity_match = 0.5
+        if self._identity is not None:
+            self._identity.reset()
+        self._build_identity()
+
+    def _build_identity(self) -> None:
+        """(Re)build the code-identity tracker from config.
+
+        The expected code is operator configuration, never simulator
+        truth: without one configured, identity stays fully disabled.
+        """
+        from fsoc_tracker.tracking.identity import CodeIdentityTracker
+        code = str(getattr(self._config, "identity_expected_code", "") or "")
+        if code:
+            self._identity = CodeIdentityTracker(
+                expected_code=code,
+                frames_per_bit=int(
+                    getattr(self._config, "identity_frames_per_bit", 3)),
+                chain_gate_px=float(
+                    getattr(self._config, "identity_chain_gate_px", 25.0)),
+            )
+        else:
+            self._identity = None
 
     def _handle_no_track(
         self, detections: list[BeaconDetection], timestamp_s: float,
@@ -260,28 +322,33 @@ class KalmanTracker:
 
         if detections:
             best = self._associate(detections)
-            if best is not None:
-                self._kf.update((best.center_x, best.center_y))
-                self._consecutive_detections += 1
-                self._consecutive_misses = 0
-                self._last_raw_detection = best
-                self._last_measurement_time_s = timestamp_s
-                self._has_measurement = True
+        else:
+            best = None
+        rescued = False
+        if best is None:
+            best = self._associate_rescue()
+            rescued = best is not None
+        if best is not None:
+            self._kf.update((best.center_x, best.center_y))
+            self._consecutive_detections += 1
+            self._consecutive_misses = 0
+            self._consecutive_rescues = (self._consecutive_rescues + 1) if rescued else 0
+            self._rescued_this_frame = rescued
+            self._note_associated(best)
+            self._last_measurement_time_s = timestamp_s
+            self._has_measurement = True
 
-                if self._consecutive_detections >= self._config.acquisition_min_consecutive_hits:
-                    self._acquisition_success_time_s = timestamp_s
-                    acq_time = timestamp_s - self._acquisition_start_time_s
-                    event = self._sm.transition(TrackState.TRACKING, timestamp_s)
-                    self._events.append(event)
-                    self._events.append(TrackingEvent(
-                        event=TrackEvent.TRACK_ACQUIRED,
-                        timestamp_s=timestamp_s,
-                        track_id=self._track_id,
-                        metadata={"acquisition_time_s": acq_time},
+            if self._consecutive_detections >= self._config.acquisition_min_consecutive_hits:
+                self._acquisition_success_time_s = timestamp_s
+                acq_time = timestamp_s - self._acquisition_start_time_s
+                event = self._sm.transition(TrackState.TRACKING, timestamp_s)
+                self._events.append(event)
+                self._events.append(TrackingEvent(
+                    event=TrackEvent.TRACK_ACQUIRED,
+                    timestamp_s=timestamp_s,
+                    track_id=self._track_id,
+                    metadata={"acquisition_time_s": acq_time},
                     ))
-            else:
-                self._consecutive_misses += 1
-                self._total_misses += 1
         else:
             self._consecutive_misses += 1
             self._total_misses += 1
@@ -297,27 +364,33 @@ class KalmanTracker:
 
         if detections:
             best = self._associate(detections)
-            if best is not None:
-                # Update with measurement
-                self._kf.update((best.center_x, best.center_y))
+        else:
+            best = None
+        rescued = False
+        if best is None:
+            best = self._associate_rescue()
+            rescued = best is not None
+        if best is not None:
+            # Update with measurement
+            self._kf.update((best.center_x, best.center_y))
 
-                self._consecutive_detections += 1
-                self._consecutive_misses = 0
-                self._total_detections += 1
-                self._last_raw_detection = best
-                self._last_measurement_time_s = timestamp_s
-                self._has_measurement = True
+            self._consecutive_detections += 1
+            self._consecutive_misses = 0
+            self._consecutive_rescues = (self._consecutive_rescues + 1) if rescued else 0
+            self._rescued_this_frame = rescued
+            self._total_detections += 1
+            self._note_associated(best)
+            self._last_measurement_time_s = timestamp_s
+            self._has_measurement = True
 
-                event = self._sm.transition(TrackState.TRACKING, timestamp_s)
-                if event.event != TrackEvent.TRACK_UPDATED:
-                    self._events.append(event)
-                self._events.append(TrackingEvent(
-                    event=TrackEvent.TRACK_UPDATED,
-                    timestamp_s=timestamp_s,
-                    track_id=self._track_id,
-                ))
-            else:
-                self._handle_miss_in_tracking(timestamp_s)
+            event = self._sm.transition(TrackState.TRACKING, timestamp_s)
+            if event.event != TrackEvent.TRACK_UPDATED:
+                self._events.append(event)
+            self._events.append(TrackingEvent(
+                event=TrackEvent.TRACK_UPDATED,
+                timestamp_s=timestamp_s,
+                track_id=self._track_id,
+            ))
         else:
             self._handle_miss_in_tracking(timestamp_s)
 
@@ -371,7 +444,7 @@ class KalmanTracker:
                 self._consecutive_detections = 1
                 self._consecutive_misses = 0
                 self._reacquisition_time_s = timestamp_s
-                self._last_raw_detection = best
+                self._note_associated(best)
                 self._last_measurement_time_s = timestamp_s
                 self._has_measurement = True
 
@@ -396,25 +469,30 @@ class KalmanTracker:
 
         if detections:
             best = self._associate(detections)
-            if best is not None:
-                self._kf.update((best.center_x, best.center_y))
-                self._consecutive_detections += 1
-                self._consecutive_misses = 0
-                self._last_raw_detection = best
-                self._last_measurement_time_s = timestamp_s
-                self._has_measurement = True
+        else:
+            best = None
+        rescued = False
+        if best is None:
+            best = self._associate_rescue()
+            rescued = best is not None
+        if best is not None:
+            self._kf.update((best.center_x, best.center_y))
+            self._consecutive_detections += 1
+            self._consecutive_misses = 0
+            self._consecutive_rescues = (self._consecutive_rescues + 1) if rescued else 0
+            self._rescued_this_frame = rescued
+            self._note_associated(best)
+            self._last_measurement_time_s = timestamp_s
+            self._has_measurement = True
 
-                if self._consecutive_detections >= self._config.acquisition_min_consecutive_hits:
-                    event = self._sm.transition(TrackState.TRACKING, timestamp_s)
-                    self._events.append(event)
-                    self._events.append(TrackingEvent(
-                        event=TrackEvent.TRACK_ACQUIRED,
-                        timestamp_s=timestamp_s,
-                        track_id=self._track_id,
-                    ))
-            else:
-                self._consecutive_misses += 1
-                self._total_misses += 1
+            if self._consecutive_detections >= self._config.acquisition_min_consecutive_hits:
+                event = self._sm.transition(TrackState.TRACKING, timestamp_s)
+                self._events.append(event)
+                self._events.append(TrackingEvent(
+                    event=TrackEvent.TRACK_ACQUIRED,
+                    timestamp_s=timestamp_s,
+                    track_id=self._track_id,
+                ))
         else:
             self._consecutive_misses += 1
             self._total_misses += 1
@@ -433,13 +511,70 @@ class KalmanTracker:
         """Select best detection by confidence."""
         return max(detections, key=lambda d: d.confidence)
 
+    def _associate_rescue(self) -> BeaconDetection | None:
+        """BYTE stage-2: associate a sub-threshold detection to the track.
+
+        Only revives live tracks (TRACKING/ACQUIRING/REACQUIRING callers);
+        never births tracks, and capped so persistent clutter cannot hold
+        a dead track alive. Same association gate as the primary pass.
+        """
+        if not self._config.rescue_enabled:
+            return None
+        if self._consecutive_rescues >= self._config.rescue_max_streak:
+            return None
+        if not self._low_dets:
+            return None
+        return associate_nearest(
+            self._low_dets,
+            self._kf.position,
+            self._config,
+            kalman_mahal_fn=self._kf.mahalanobis_distance,
+            min_confidence=self._config.rescue_confidence_floor,
+            ignore_detected_flag=True,
+        )
+
+
+    def _note_associated(self, det: BeaconDetection) -> None:
+        """Record an accepted association + update appearance signature.
+
+        The signature learns only from frames the system itself rated at
+        lock quality on the previous frame: updating it from hijacked
+        frames would repaint the signature in the distractor's image.
+        """
+        self._last_raw_detection = det
+        if not getattr(self, "_last_quality", 0.0) >= self._config.lock_quality_threshold:
+            return
+        alpha = float(self._config.appearance_ema_alpha)
+        area = float(det.area)
+        inten = float(det.mean_intensity)
+        if self._appear_area is None:
+            self._appear_area, self._appear_intensity = area, inten
+        else:
+            self._appear_area += alpha * (area - self._appear_area)
+            self._appear_intensity += alpha * (inten - self._appear_intensity)
+
     def _associate(self, detections: list[BeaconDetection]) -> BeaconDetection | None:
         """Associate detection to current track using gating."""
+        from fsoc_tracker.tracking.association import associate_with_appearance
         predicted = self._kf.position
-        return associate_nearest(
-            detections, predicted, self._config,
+        appear = None
+        if self._appear_area is not None and self._appear_intensity is not None:
+            appear = (self._appear_area, self._appear_intensity)
+        identity_fn = None
+        if self._identity is not None and self._identity.enabled:
+            identity_fn = self._identity.score
+        best = associate_with_appearance(
+            detections, predicted, self._config, appear,
             kalman_mahal_fn=self._kf.mahalanobis_distance,
+            identity_fn=identity_fn,
         )
+        if best is not None and identity_fn is not None:
+            try:
+                match, _ = identity_fn(best)
+            except Exception:
+                match = 0.5
+            self._last_identity_match = float(match)
+        return best
 
     def _start_track(self, detection: BeaconDetection, timestamp_s: float) -> None:
         """Initialize a new track from a detection."""
@@ -448,6 +583,8 @@ class KalmanTracker:
         self._acquisition_start_time_s = timestamp_s
         self._last_measurement_time_s = timestamp_s
         self._has_measurement = True
+        self._appear_area = float(detection.area)
+        self._appear_intensity = float(detection.mean_intensity)
         self._consecutive_detections = 0
         self._consecutive_misses = 0
 
@@ -455,7 +592,12 @@ class KalmanTracker:
         """Reset track-specific counters (not the full tracker)."""
         self._consecutive_detections = 0
         self._consecutive_misses = 0
+        self._consecutive_rescues = 0
+        self._rescued_this_frame = False
+        self._low_dets = []
         self._last_raw_detection = None
+        self._appear_area = None
+        self._appear_intensity = None
 
     def _build_state(self, timestamp_s: float, dt: float = 0.0) -> TrackingState:
         """Build TrackingState from current internal state."""
@@ -520,9 +662,15 @@ class KalmanTracker:
             self._sm.state in (TrackState.TRACKING, TrackState.LOST, TrackState.REACQUIRING)
             and self._consecutive_misses > 0
         )
+        ts.rescued_by_low_conf = self._rescued_this_frame
 
         # Quality
         ts.quality = self._compute_quality(timestamp_s)
+        self._last_quality = ts.quality
+
+        # Coded-identity match of the last association (0.5 = no evidence)
+        ts.identity_match = float(getattr(
+            self, "_last_identity_match", 0.5))
 
         # Lock
         ts.locked = (

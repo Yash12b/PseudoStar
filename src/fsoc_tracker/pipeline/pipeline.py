@@ -11,26 +11,57 @@ from __future__ import annotations
 
 import logging
 import time
+from array import array
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 import numpy as np
 
+from fsoc_tracker.control.command import ControlCommand, ControlMode, ControlTelemetry
+from fsoc_tracker.control.config import ControllerConfig
+from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
 from fsoc_tracker.core.time import compute_dt
 from fsoc_tracker.perception.base import PerceptionEngine
 from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
 from fsoc_tracker.perception.config import PerceptionConfig
-from fsoc_tracker.perception.models import PerceptionResult
+from fsoc_tracker.perception.models import PerceptionResult, PerceptionStatus
 from fsoc_tracker.pipeline.eval import EvalSink, score_against_truth
-from fsoc_tracker.pipeline.sources import FrameSource, SimulationSource
+from fsoc_tracker.pipeline.sources import (
+    FrameSource,
+    SimulationSource,
+    VideoSource,
+)
 from fsoc_tracker.tracking.config import TrackerConfig
 from fsoc_tracker.tracking.state import TrackingState, TrackState
 from fsoc_tracker.tracking.tracker import KalmanTracker
-from fsoc_tracker.control.config import ControllerConfig
-from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
-from fsoc_tracker.control.command import ControlCommand, ControlTelemetry, ControlMode
+
+logger = logging.getLogger(__name__)
+
+# Static-clutter suppression (recorded video sources only).
+#
+# Rationale: with the PTZ camera bypassed (PS Benchmark-2 setup), the
+# viewpoint never moves, so any bright blob that is pixel-static across
+# many consecutive frames is a burned-in overlay (OSD / label bar), not
+# an optical beacon — real beacons move and their centroids jitter with
+# sensor noise. Suppressing such candidates keeps acquisition and
+# re-acquisition from locking onto overlay text. Simulation sources are
+# exempt (no overlays exist there; static user-controlled beacons must
+# remain trackable).
+#
+# Two layers in one rule: a candidate survives only with presence
+# plus drift. It must appear (within SUPPORTER_RADIUS_PX) in at least
+# SUPPORTERS_MIN of the last STATIC_SUPPRESS_FRAMES frames, and its
+# maximum displacement over those supporters must exceed DRIFT_MIN_PX.
+# Burned-in overlays are detected in most frames yet never move;
+# flickering glyphs fail the presence count; random salt/noise fails
+# both. Moving beacons — even the slowest test drift (>2 px over the
+# window) — pass both. Of the survivors, the best above the confidence
+# threshold becomes primary; newly appearing beacons confirm within a
+# few frames, negligible against acquisition streaks.
+STATIC_SUPPRESS_FRAMES = 10
+STATIC_SUPPRESS_MIN_MATCHES = 6
+SUPPORTER_RADIUS_PX = 120.0
+DRIFT_MIN_PX = 1.5
 
 
 @dataclass
@@ -72,7 +103,14 @@ class PipelineFrameResult:
 
 @dataclass
 class PipelineState:
-    """Accumulated pipeline state across frames."""
+    """Accumulated pipeline state across frames.
+
+    Per-frame float histories use ``array('d')`` (8 bytes/entry) instead
+    of ``list`` (~32 bytes/entry as boxed floats) so day-long runs
+    (millions of frames) stay resident-friendly. All consumers use only
+    append/len/iteration/mean — never list identity — so semantics are
+    unchanged.
+    """
 
     frame_count: int = 0
     total_time_s: float = 0.0
@@ -82,13 +120,13 @@ class PipelineState:
     lock_frame: int | None = None
     loss_events: int = 0
     reacquisition_times: list[float] = field(default_factory=list)
-    errors: list[float] = field(default_factory=list)
-    errors_x: list[float] = field(default_factory=list)
-    errors_y: list[float] = field(default_factory=list)
-    processing_times_ms: list[float] = field(default_factory=list)
-    perception_times_ms: list[float] = field(default_factory=list)
-    tracking_times_ms: list[float] = field(default_factory=list)
-    control_times_ms: list[float] = field(default_factory=list)
+    errors: array = field(default_factory=lambda: array("d"))
+    errors_x: array = field(default_factory=lambda: array("d"))
+    errors_y: array = field(default_factory=lambda: array("d"))
+    processing_times_ms: array = field(default_factory=lambda: array("d"))
+    perception_times_ms: array = field(default_factory=lambda: array("d"))
+    tracking_times_ms: array = field(default_factory=lambda: array("d"))
+    control_times_ms: array = field(default_factory=lambda: array("d"))
     was_locked: bool = False
     last_lock_time_s: float = 0.0
     last_loss_time_s: float = 0.0
@@ -267,11 +305,15 @@ class TrackingPipeline:
         self._source: FrameSource | None = None
         self._state = PipelineState()
         self._running = False
+        self._use_kalman_tracker = True
         self._last_frame: np.ndarray | None = None
         self._last_perception: PerceptionResult | None = None
         self._last_tracking: TrackingState | None = None
         self._last_command: ControlCommand | None = None
         self._feature_window: list[Any] = []
+        # Recent per-frame detection centroids (pre-filter) for static-
+        # clutter suppression. Trimmed to STATIC_SUPPRESS_FRAMES + 1.
+        self._static_hist: list[list[tuple[float, float]]] = []
 
     @property
     def perception(self) -> PerceptionEngine:
@@ -293,6 +335,21 @@ class TrackingPipeline:
     def running(self) -> bool:
         return self._running
 
+    def set_tracker_enabled(self, enabled: bool) -> None:
+        """Enable/disable the Kalman tracker at runtime (ablation).
+
+        Disabled = raw-detection tracking: the estimate follows the
+        primary detection directly (no filtering, no prediction). Used
+        live from the GUI to demonstrate each layer's contribution.
+        """
+        self._use_kalman_tracker = bool(enabled)
+        if enabled:
+            self._tracker.reset(self._state._prev_ts or 0.0)
+
+    def set_perception(self, perception: PerceptionEngine) -> None:
+        """Swap the perception backend at runtime (stateless: safe)."""
+        self._perception = perception
+
     @property
     def last_frame(self) -> np.ndarray | None:
         return self._last_frame
@@ -312,6 +369,9 @@ class TrackingPipeline:
     def set_source(self, source: FrameSource) -> None:
         """Set the input source. Inherits eval_sink from the source if present."""
         self._source = source
+        # A new source is unknown by definition: drop static-clutter
+        # history so nothing carries over between videos.
+        self._static_hist = []
         sink = getattr(source, "eval_sink", None)
         if sink is not None:
             self._eval_sink = sink
@@ -421,19 +481,30 @@ class TrackingPipeline:
                 cand.center_x += ox
                 cand.center_y += oy
         result.perception_ms = (time.perf_counter() - t0) * 1000.0
+        perception_result = self._suppress_static_clutter(perception_result)
         result.perception = perception_result
         self._last_perception = perception_result
 
-        # 2. Tracking — detections only, never frame metadata / GT
+        # 2. Tracking — detections only, never frame metadata / GT.
+        # The full (static-filtered) list always goes through: the tracker
+        # splits high-confidence association from the BYTE-style rescue
+        # pass over sub-threshold candidates itself.
         t1 = time.perf_counter()
-        detections = perception_result.detections if perception_result.detected else []
-        tracking_state = self._tracker.update(detections, frame.timestamp_s)
+        detections = list(perception_result.detections)
+        if self._use_kalman_tracker:
+            tracking_state = self._tracker.update(
+                detections, frame.timestamp_s,
+                {"frame_index": frame.frame_index},
+            )
+        else:
+            tracking_state = self._raw_track_state(
+                perception_result, frame.timestamp_s)
 
         if self._adaptive_kalman is not None and self._adaptive_kalman._config.enabled:
             try:
-                from fsoc_tracker.perception.quality import QualityState, QualityLevel
+                from fsoc_tracker.perception.quality import QualityLevel, QualityState
+                from fsoc_tracker.perception.uncertainty import UncertaintyLevel, UncertaintyState
                 from fsoc_tracker.tracking.maneuver import ManeuverState, MotionClass
-                from fsoc_tracker.perception.uncertainty import UncertaintyState, UncertaintyLevel
 
                 quality = QualityState(level=QualityLevel.GOOD)
                 if perception_result and hasattr(perception_result, 'diagnostics'):
@@ -635,6 +706,102 @@ class TrackingPipeline:
             return None
         return getattr(self._source, "camera", None)
 
+    def _suppress_static_clutter(
+        self, perception_result: PerceptionResult,
+    ) -> PerceptionResult:
+        """Drop overlay-like candidates on recorded video sources.
+
+        Records every frame's detection centroids (pre-filter), then
+        drops candidates present in most recent frames yet undisplaced
+        (burned-in overlays), while random one-frame clutter fails the
+        presence count. Non-video sources bypass untouched. Of the
+        survivors, the best above the confidence threshold becomes
+        primary. Raw counts are preserved for logging.
+        """
+        current = [(float(d.center_x), float(d.center_y))
+                   for d in perception_result.detections]
+        self._static_hist.append(current)
+        if len(self._static_hist) > STATIC_SUPPRESS_FRAMES + 1:
+            self._static_hist = self._static_hist[-(STATIC_SUPPRESS_FRAMES + 1):]
+
+        if (not isinstance(self._source, VideoSource)
+                or len(self._static_hist) <= STATIC_SUPPRESS_FRAMES
+                or not perception_result.detections):
+            return perception_result
+
+        past = self._static_hist[:-1][-STATIC_SUPPRESS_FRAMES:]
+
+        def supporters(x: float, y: float) -> list[tuple[float, float]]:
+            pts: list[tuple[float, float]] = []
+            for frame_pts in past:
+                for px, py in frame_pts:
+                    if (abs(x - px) <= SUPPORTER_RADIUS_PX
+                            and abs(y - py) <= SUPPORTER_RADIUS_PX):
+                        pts.append((px, py))
+                        break
+            return pts
+
+        def is_overlay(x: float, y: float) -> bool:
+            sup = supporters(x, y)
+            if len(sup) < STATIC_SUPPRESS_MIN_MATCHES:
+                return False
+            drift = max(float(np.hypot(x - px, y - py)) for px, py in sup)
+            return drift <= DRIFT_MIN_PX
+
+        kept = [d for d in perception_result.detections
+                if not is_overlay(float(d.center_x), float(d.center_y))]
+        dropped = len(perception_result.detections) - len(kept)
+        if dropped > 0:
+            perception_result.diagnostics["static_suppressed"] = dropped
+        # The tracker and the primary slot see confirmed detections only.
+        perception_result.detections = kept
+        if not kept:
+            perception_result.primary_detection = None
+            perception_result.status = PerceptionStatus.NO_TARGET
+            return perception_result
+        min_conf = self._perception.config.min_confidence
+        eligible = [d for d in kept if bool(d.confidence >= min_conf)]
+        if not eligible:
+            perception_result.primary_detection = None
+            perception_result.status = PerceptionStatus.NO_TARGET
+            return perception_result
+        best = max(eligible, key=lambda d: d.confidence)
+        best.detected = True
+        perception_result.primary_detection = best
+        perception_result.status = PerceptionStatus.DETECTED
+        return perception_result
+
+    def _raw_track_state(
+        self, perception_result: PerceptionResult, timestamp_s: float,
+    ) -> TrackingState:
+        """Raw-detection track state for Kalman-off ablation.
+
+        Mirrors the primary detection with zero velocity and no
+        prediction or lock: the honest no-filter baseline. Search and
+        control consume it like any other TrackingState.
+        """
+        ts = TrackingState(timestamp_s=timestamp_s)
+        prim = (perception_result.primary_detection
+                if perception_result is not None else None)
+        if prim is not None and bool(prim.detected):
+            ts.state = TrackState.TRACKING
+            ts.estimated_x = float(prim.center_x)
+            ts.estimated_y = float(prim.center_y)
+            ts.predicted_x = float(prim.center_x)
+            ts.predicted_y = float(prim.center_y)
+            ts.detection_x = float(prim.center_x)
+            ts.detection_y = float(prim.center_y)
+            ts.detection_confidence = float(prim.confidence)
+            ts.has_detection = True
+            ts.consecutive_detections = 1
+            ts.locked = True
+            ts.quality = float(prim.confidence)
+        else:
+            ts.state = TrackState.LOST
+            ts.consecutive_misses = 1
+            ts.time_since_last_detection_s = 0.0
+        return ts
+
     def _crop_for_detection(self, image: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
         roi = self._adaptive_roi
         if roi is None or image is None:
@@ -663,7 +830,7 @@ class TrackingPipeline:
         primary = perception_result.primary_detection if perception_result else None
         detected = bool(primary and primary.detected)
         confidence = primary.confidence if primary else 0.0
-        if hasattr(roi, "update") and callable(getattr(roi, "update")):
+        if hasattr(roi, "update") and callable(roi.update):
             try:
                 roi.update(
                     detected=detected,
@@ -704,7 +871,7 @@ class TrackingPipeline:
         frame: Any,
     ) -> dict[str, Any]:
         """Run AI mission brain step. Returns dict with decision, features, risk, roi."""
-        from fsoc_tracker.ai.mission import ObservationFeatures, MissionObservation
+        from fsoc_tracker.ai.mission import MissionObservation, ObservationFeatures
 
         detected = tracking_state.has_detection and tracking_state.state in (
             TrackState.TRACKING, TrackState.ACQUIRING, TrackState.REACQUIRING,

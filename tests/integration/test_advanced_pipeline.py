@@ -11,11 +11,7 @@ Tests the full advanced pipeline:
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helper: build complete advanced pipeline
@@ -29,31 +25,30 @@ def _make_advanced_pipeline(
     seed: int = 42,
 ):
     """Build a complete advanced pipeline with all Stage 13 components."""
-    from fsoc_tracker.perception.quality import ImageQualityAnalyzer
-    from fsoc_tracker.perception.uncertainty import UncertaintyEstimator
-    from fsoc_tracker.perception.policy import PerceptionPolicy
-    from fsoc_tracker.perception.fusion import FusionEngine
-    from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
-    from fsoc_tracker.perception.config import PerceptionConfig
-    from fsoc_tracker.perception.refinement import CoarseToFineRefiner
-    from fsoc_tracker.tracking.tracker import KalmanTracker
-    from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
-    from fsoc_tracker.tracking.maneuver import ManeuverDetector
-    from fsoc_tracker.tracking.search import SearchController
-    from fsoc_tracker.tracking.lock_quality import LockQualityEstimator
-    from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
+    from fsoc_tracker.advanced.diagnostics import DiagnosticLog
     from fsoc_tracker.control.adaptive import AdaptiveController
-    from fsoc_tracker.simulation.engine import SimulationEngine
-    from fsoc_tracker.simulation.world import WorldConfig
+    from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
+    from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
+    from fsoc_tracker.perception.config import PerceptionConfig, ThresholdMode
+    from fsoc_tracker.perception.fusion import FusionEngine
+    from fsoc_tracker.perception.policy import PerceptionPolicy
+    from fsoc_tracker.perception.quality import ImageQualityAnalyzer
+    from fsoc_tracker.perception.refinement import CoarseToFineRefiner
+    from fsoc_tracker.perception.uncertainty import UncertaintyEstimator
+    from fsoc_tracker.pipeline.eval import EvalSink
+    from fsoc_tracker.pipeline.pipeline import TrackingPipeline
+    from fsoc_tracker.pipeline.sources import SimulationSource
     from fsoc_tracker.simulation.camera.camera import VirtualCamera
     from fsoc_tracker.simulation.camera.state import CameraState
+    from fsoc_tracker.simulation.engine import SimulationEngine
     from fsoc_tracker.simulation.sensor.config import SensorConfig
     from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
-    from fsoc_tracker.pipeline.pipeline import TrackingPipeline, PipelineFrameResult
-    from fsoc_tracker.pipeline.sources import SimulationSource
-    from fsoc_tracker.pipeline.eval import EvalSink
-    from fsoc_tracker.advanced.diagnostics import DiagnosticLog
-    from fsoc_tracker.perception.config import ThresholdMode
+    from fsoc_tracker.simulation.world import WorldConfig
+    from fsoc_tracker.tracking.adaptive_kalman import AdaptiveKalmanManager
+    from fsoc_tracker.tracking.lock_quality import LockQualityEstimator
+    from fsoc_tracker.tracking.maneuver import ManeuverDetector
+    from fsoc_tracker.tracking.search import SearchController
+    from fsoc_tracker.tracking.tracker import KalmanTracker
 
     wc = WorldConfig(width=2000.0, height=2000.0, random_seed=seed)
     engine = SimulationEngine(wc)
@@ -218,7 +213,7 @@ class TestAdvancedEndToEnd:
         assert 0.0 <= score <= 1.0
 
     def test_search_controller_lifecycle(self):
-        from fsoc_tracker.tracking.search import SearchController, SearchPhase
+        from fsoc_tracker.tracking.search import SearchController
         sc = SearchController()
         sc.begin_search(320.0, 240.0, 50.0, 0.0, 0.0)
         for _ in range(5):
@@ -230,19 +225,19 @@ class TestAdvancedEndToEnd:
 
 class TestBaselineVsAdvanced:
     def test_baseline_pipeline(self):
+        from fsoc_tracker.control.controller import CameraActuator, CoarsePointingController
         from fsoc_tracker.perception.classical_engine import ClassicalBeaconDetector
         from fsoc_tracker.perception.config import PerceptionConfig, ThresholdMode
-        from fsoc_tracker.tracking.tracker import KalmanTracker
-        from fsoc_tracker.control.controller import CoarsePointingController, CameraActuator
-        from fsoc_tracker.simulation.engine import SimulationEngine
-        from fsoc_tracker.simulation.world import WorldConfig
-        from fsoc_tracker.simulation.camera.camera import VirtualCamera
-        from fsoc_tracker.simulation.camera.state import CameraState
-        from fsoc_tracker.simulation.sensor.config import SensorConfig
-        from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+        from fsoc_tracker.pipeline.eval import EvalSink
         from fsoc_tracker.pipeline.pipeline import TrackingPipeline
         from fsoc_tracker.pipeline.sources import SimulationSource
-        from fsoc_tracker.pipeline.eval import EvalSink
+        from fsoc_tracker.simulation.camera.camera import VirtualCamera
+        from fsoc_tracker.simulation.camera.state import CameraState
+        from fsoc_tracker.simulation.engine import SimulationEngine
+        from fsoc_tracker.simulation.sensor.config import SensorConfig
+        from fsoc_tracker.simulation.sensor.renderer import VirtualSensorRenderer
+        from fsoc_tracker.simulation.world import WorldConfig
+        from fsoc_tracker.tracking.tracker import KalmanTracker
 
         wc = WorldConfig(width=2000.0, height=2000.0, random_seed=42)
         engine = SimulationEngine(wc)

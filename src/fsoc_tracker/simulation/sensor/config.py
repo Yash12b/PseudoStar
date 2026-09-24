@@ -53,6 +53,10 @@ class SensorConfig(BaseModel):
     beacon_peak_intensity: float = Field(default=255.0, ge=0)
     beacon_shape: BeaconShape = BeaconShape.SQUARE
     beacon_soft_edges: bool = True
+    # Identity-code modulation: frames per code bit. Must match the
+    # tracker's identity_frames_per_bit (both default 3); the identity
+    # decoder and this renderer otherwise disagree on bit timing.
+    code_frames_per_bit: int = Field(default=3, ge=1, le=30)
 
     size_mode: SizeMode = SizeMode.FIXED
     physical_target_size_m: float = Field(default=0.01, gt=0)
