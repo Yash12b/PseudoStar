@@ -1,4 +1,4 @@
-# FSOC Tracker
+# Pseudo Star
 
 AI-Based Virtual Camera Tracking System for Coarse Alignment of Mobile Free Space Optical Communication (FSOC) Terminals.
 
